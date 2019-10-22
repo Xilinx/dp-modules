@@ -1,0 +1,62 @@
+Xilinx DP RX Subsystem
+
+The Xilinx DP RX Subsystem contains several subcores to implement
+a DP receiver. /dp/xilinx-dprxss.c implements a
+V4L2 video-capture sub-device for the Xilinx Video IP Pipeline device
+(xilinx-vipp).
+
+Refer to xlnx,vphy.txt for the phy specifics.
+
+Required Properties:
+ - compatible: Should be "xlnx,v-dp-rxss1-2.0".
+ - reg: Base address and size of the IP core.
+ - interrupts-parent: phandle for interrupt controller.
+ - interrupts: Interrupt numbers for mandatory
+ - interrupt-names: Identification string that binds irq number to block
+		generating the interrupt
+		"dprxss_dp_irq": interrupt for rx subcore [always present]
+
+ - clocks: phandle for axi-lite,video clock,stream clock,link clock.
+ - clock-names: The identification string, "s_axi_aclk", is always required for
+                the axi-lite clock, "rx_vid_clk" is always required for video clock,
+		"m_axis_aclk_stream1" is always required for stream clock,"rx_lnk_clk" is 
+		always required for link clock 
+	
+ - phys: phandle for phy lanes registered for dp protocol. DP always
+         require 4 lanes
+ - phy-names: The identification string, "dp-phy0" and so on
+ - ports: Video ports, using the DT bindings defined in ../video-interfaces.txt.
+          The Rx only has an output port (0).
+
+==Example==
+
+	 dp_rx_hier_0_v_dp_rxss1_0: v_dp_rxss1@a0040000 {
+                         clock-names = "s_axi_aclk", "rx_vid_clk", "m_axis_aclk_stream1", 
+			"rx_lnk_clk", "m_aud_axis_aclk";
+                         clocks = <&zynqmp_clk 71>, <&zynqmp_clk 72>, <&zynqmp_clk 72>, 
+			<&misc _clk_1>, <&zynqmp_clk 71>;
+                         compatible = "xlnx,v-dp-rxss1-2.0";
+                         interrupt-names = "dprxss_dp_irq";
+                         interrupt-parent = <&gic>;
+                         interrupts = <0 89 4>;
+                         xlnx,xlnx-vid-edid = <&dp_rx_hier_0_vid_edid_0>;
+                         reg = <0x0 0xa0040000 0x0 0x40000>;
+                         phy-names = "dp-phy0", "dp-phy1", "dp-phy2", "dp-phy3";
+                         phys = <&vphy_lane0 0 1 1 0>, <&vphy_lane1 0 1 1 0>, 
+				<&vphy_lane2 0 1     1 0>, <&vphy_lane3 0 1 1 0>;
+                         
+			 ports {
+                         	#address-cells = <1>;
+                         	#size-cells = <0>;
+                         	port@0 {
+                                	 reg = <0>;
+ 	                                /* DP RX SS -> FB-WR */
+                                         xlnx,video-format = <0>;
+                                         xlnx,video-width = <8>;
+ 
+                	                 dp_rxss_out: endpoint {
+                        	                 remote-endpoint = <&remap0_in>;
+                                		 };
+                        		 };
+                		 };
+			};

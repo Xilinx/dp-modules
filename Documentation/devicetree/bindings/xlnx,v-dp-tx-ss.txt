@@ -1,0 +1,95 @@
+Xilinx DP TX Subsystem
+
+The Xilinx DP TX Subsystem contains several subcores to implement
+a DP Transmitter. xlnx_drm_dp.c implements a DRM/KMS driver
+encoder/connector interface in the output pipeline.
+
+Note: This version of the driver interfaces with the new Xilinx DRM component
+	  framework and is not backward compatible with the earlier encoder-slave
+	  interface. As such compatibility string has been reved up to indicate the
+	  new interface.
+
+Refer to xlnx,vphy.txt for the phy specifics.
+
+Required properties:
+ - compatible: Should be "xlnx,v-dp-txss1-2.1".
+ - reg: Base address and size of the IP core
+ - interrupts-parent: phandle for interrupt controller.
+ - interrupts: Interrupt number for tx subcore
+ - interrupt-names: Identification string that binds irq number to block
+		generating the interrupt
+		"dptxss_dp_irq": interrupt for tx subcore [always present]
+ - clocks: phandle for axi-lite, on board si570 clock
+ - clock-names: The identification string for various clock inputs
+				"s_axi_aclk", is always required for the axi-lite clock
+				"tx_vid_clk_stream1" is always required for video stream clock
+
+ - phys: phandle for phy lanes registered for hdmi protocol. DP always
+         require 4 lanes
+ - phy-names: The identification string, "dp-phy0" and so on
+ - xlnx,max-link-rate : maximum link rate supported
+ - xlnx,max-bpc : The data width per video component (8,10,12,16)
+           Note: Only 8 & 10 is supported at this time 
+ - xlnx,audio-chan : No of audio channels configured
+ - xlnx,max-pclock-frequency: Maximum pixel clock
+ - xlnx,max-lanes:Maximum lanes supported
+ - xlnx,remap-tx : remaper-tx node 
+ - reset-gpio: GPIO reset for remapper-tx IP 
+
+Sub-Node Properties:
+	The device tree will need to include a sub-node for the encoder endpoint
+	interface. This port will bind the hdmi encoder with the crtc being used
+
+	Required Properties:
+	- ports: Connects to the crtc node through the device graph binding.
+	The port should contain a 'remote-endpoint' sub-node that points to the
+	endpoint in the port of the crtc/dma-engine device node.
+
+==Example==
+
+	dp_tx_hier_0_v_dp_txss1_0: v_dp_txss1@a0100000 {
+        
+	                clock-names = "s_axi_aclk","tx_vid_clk_stream1";
+                        clocks = <&zynqmp_clk 71>,<&si570_1>;
+                        compatible = "xlnx,v-dp-txss1-1.0";
+                        interrupt-names = "dptxss_dp_irq";
+                        interrupt-parent = <&gic>;
+                        interrupts = <0 92 4>;
+                        reg = <0x0 0xa0100000 0x0 0x40000>;
+                        xlnx,max-lanes = <4>;
+                        xlnx,max-link-rate = <810000>;
+                        xlnx,max-bpc = <16>;
+                        xlnx,colormetry = "rgb";
+                        xlnx,bpc = <8>;
+                        xlnx,audio-chan = <2>;
+                        xlnx,max-pclock-frequency = <300000>;
+						xlnx,remap-tx = <&dp_tx_hier_0_remap_tx>; 
+						reset-gpio = <&dp_tx_hier_0_axi_gpio_remap_tx 0 0 1>;
+                        phy-names = "dp-phy0", "dp-phy1", "dp-phy2", "dp-phy3";
+                        phys = <&vphy_lane0 0 1 1 1>, <&vphy_lane1 0 1 1 1>,
+						<&vphy_lane2 0 1     1 1>, <&vphy_lane3 0 1 1 1>;
+                        encoder_dp_port: port@0 {
+                                reg = <0>;
+                                dp_encoder: endpoint {
+                                        remote-endpoint = <&pl_disp_crtc>;
+                                };
+                        };
+                        	i2c-bus {
+                        };
+
+                };
+
+
+                 v_pl_disp: drm-pl-disp-drv {
+                         compatible = "xlnx,pl-disp";
+                         dmas = <&dp_tx_hier_0_v_frmbuf_rd_0 0>;
+                         dma-names = "dma0";
+                         xlnx,vformat = "YUYV";
+                         pl_disp_port: port@0 {
+                                 reg = <0>;
+                                 pl_disp_crtc: endpoint {
+                                         remote-endpoint = <&dp_encoder>;
+                                 };
+                         };
+                 };
+
