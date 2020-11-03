@@ -7,862 +7,736 @@
  * Author: Rajesh Gugulothu <gugulothu.rajesh@xilinx.com>
  *
  */
-#include <dt-bindings/media/xilinx-vip.h>
-#include <linux/bitops.h>
-#include <linux/compiler.h>
+#include <linux/bitfield.h>
 #include <linux/clk.h>
-#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
-#include <linux/of_address.h> 
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/of_address.h>
+#include <linux/phy/phy.h>
+#include <linux/phy/phy-dp.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/spinlock_types.h>
 #include <linux/types.h>
-#include <linux/v4l2-subdev.h>
-#include <linux/xilinx-v4l2-controls.h>
 #include <linux/v4l2-dv-timings.h>
-#include <media/media-entity.h>
-#include <media/v4l2-common.h>
-#include <media/v4l2-ctrls.h>
-#include <media/v4l2-event.h>
-#include <media/v4l2-fwnode.h>
-#include <media/v4l2-subdev.h>
+#include <linux/v4l2-subdev.h>
+
+#include <drm/drm_dp_helper.h>
+#include <dt-bindings/media/xilinx-vip.h>
+
 #include <media/v4l2-dv-timings.h>
+#include <media/v4l2-event.h>
+#include <media/v4l2-subdev.h>
 
 #include "xilinx-vip.h"
+
+/* DP Rx subsysetm register map, bitmask, and offsets. */
+#define XDPRX_LINK_ENABLE_REG		0x000
+#define XDPRX_AUX_CLKDIV_REG		0x004
+#define XDPRX_AUX_DEFER_COUNT		6
+#define XDPRX_AUX_DEFER_SHIFT		24
+#define XDPRX_AUX_DEFER_MASK		GENMASK(27, 24)
+
+#define XDPRX_LINERST_DIS_REG		0x008
+#define XDPRX_DTG_REG			0x00c
+#define XDPRX_DTG_DIS_MASK		GENMASK(31, 1)
+
+#define XDPRX_PIXEL_WIDTH_REG		0x010
+#define XDPRX_INTR_MASK_REG		0x014
+#define XDPRX_INTR_POWER_MASK		BIT(1)
+#define XDPRX_INTR_NOVID_MASK		BIT(2)
+#define XDPRX_INTR_VBLANK_MASK		BIT(3)
+#define XDPRX_INTR_TRLOST_MASK		BIT(4)
+#define XDPRX_INTR_VID_MASK		BIT(6)
+#define XDPRX_INTR_TRDONE_MASK		BIT(14)
+#define XDPRX_INTR_BWCHANGE_MASK	BIT(15)
+#define XDPRX_INTR_TP1_MASK		BIT(16)
+#define XDPRX_INTR_T2_MASK		BIT(17)
+#define XDPRX_INTR_TP3_MASK		BIT(18)
+#define XDPRX_INTR_LINKQUAL_MASK	BIT(29)
+#define XDPRX_INTR_UNPLUG_MASK		BIT(31)
+#define XDPRX_INTR_CRCTST_MASK		BIT(30)
+#define XDPRX_INTR_TRNG_MASK		(XDPRX_INTR_TP1_MASK | \
+					 XDPRX_INTR_T2_MASK |\
+					 XDPRX_INTR_TP3_MASK | \
+					 XDPRX_INTR_POWER_MASK |\
+					 XDPRX_INTR_CRCTST_MASK |\
+					 XDPRX_INTR_BWCHANGE_MASK)
+#define XDPRX_INTR_ALL_MASK		0xffffffff
+
+#define XDPRX_SOFT_RST_REG		0x01c
+#define XDPRX_SOFT_VIDRST_MASK		BIT(0)
+#define XDPRX_SOFT_AUXRST_MASK		BIT(7)
+
+#define XDPRX_HPD_INTR_REG		0x02c
+#define XDPRX_HPD_INTR_MASK		BIT(1)
+#define XDPRX_HPD_PULSE_MASK		GENMASK(31, 16)
+
+#define XDPRX_INTR_CAUSE_REG		0x040
+#define XDPRX_INTR_CAUSE1_REG		0x048
+#define XDPRX_CRC_CONFIG_REG		0x074
+#define XDPRX_CRC_EN_MASK		BIT(5)
+
+#define XDPRX_LOCAL_EDID_REG		0x084
+#define XDPRX_VIDEO_UNSUPPORTED_REG	0x094
+#define XDPRX_VRD_BWSET_REG		0x09c
+#define XDPRX_LANE_CNT_REG		0x0a0
+#define XDPRX_EFRAME_CAP_MASK		BIT(7)
+#define XDPRX_LNCNT_TPS3_MASK		BIT(6)
+
+#define XDPRX_TP_SET_REG		0x0a4
+#define XDPRX_AUX_RDINT_SHIFT		8
+#define XDPRX_AUX_RDINT_16MS		4
+#define XDPRX_AUX_READINTRVL_REG	BIT(15)
+
+#define XDPRX_CTRL_DPCD_REG		0x0b8
+#define XDPRX_MST_CAP_REG		0x0d0
+#define XDPRX_SINK_COUNT_REG		0x0d4
+
+#define XDPRX_PHY_REG			0x200
+#define XDPRX_PHY_GTPLLRST_MASK		BIT(0)
+#define XDPRX_PHY_GTRXRST_MASK		BIT(1)
+#define XDPRX_PHYRST_TRITER_MASK	BIT(23)
+#define XDPRX_PHYRST_RATECHANGE_MASK	BIT(24)
+#define XDPRX_PHYRST_TP1START_MASK	BIT(25)
+#define XDPRX_PHYRST_ENBL_MASK		0x0
+#define XDPRX_PHY_INIT_MASK		GENMASK(29, 27)
+
+#define XDPRX_MINVOLT_SWING_REG		0x214
+#define XDPRX_VS_PE_SHIFT		12
+#define XDPRX_VS_SWEEP_CNTSHIFT		4
+#define XDPRX_VS_CROPT_SHIFT		2
+#define XDPRX_VS_CROPT_INC4CNT		1
+#define XDPRX_MIN_VS_MASK		(1 | (XDPRX_VS_CROPT_INC4CNT << \
+					 XDPRX_VS_CROPT_SHIFT) | \
+					 (4 << XDPRX_VS_SWEEP_CNTSHIFT) | \
+					 (1 << XDPRX_VS_PE_SHIFT))
+
+#define XDPRX_CDRCTRL_CFG_REG		0x21c
+/* CDR tDLOCK calibration value */
+#define XDPRX_CDRCTRL_TDLOCK_VAL	0x1388
+#define XDPRX_CDRCTRL_DIS_TIMEOUT	BIT(30)
+
+#define XDPRX_BSIDLE_TIME_REG		0x220
+#define XDPRX_BSIDLE_TMOUT_VAL		0x047868C0
+
+#define XDPRX_LINK_BW_REG		0x400
+#define XDPRX_LANE_COUNT_REG		0x404
+#define XDPRX_MSA_HRES_REG		0x500
+#define XDPRX_MSA_VHEIGHT_REG		0x514
+#define XDPRX_MSA_HTOTAL_REG		0x510
+#define XDPRX_MSA_VTOTAL_REG		0x524
+#define XDPRX_MSA_MISC0_REG		0x528
+#define XDPRX_MSA_FMT_MASK		GENMASK(2, 1)
+#define XDPRX_MSA_BPC_MASK		GENMASK(7, 5)
+#define XDPRX_COLOR_DEPTH_SHIFT		5
+#define XDPRX_COLOR_FMT_SHIFT		1
+
+#define XDPRX_MSA_MISC1_REG		0x52c
+#define XDPRX_INTERLACE_MASK		BIT(0)
+
+#define XDPRX_MSA_MVID_REG		0x530
+#define XDPRX_MSA_NVID_REG		0x534
+#define XDPRX_INTR_ERRORCNT_MASK	BIT(28)
+#define XDPRX_INTR_LANESET_MASK		BIT(30)
+
+#define XDPRX_COLOR_FORMAT_RGB		0x0
+#define XDPRX_COLOR_FORMAT_422		0x1
+#define XDPRX_COLOR_FORMAT_444		0x2
+#define MHZ				1000000
+#define XDPRX_MAX_LANE_COUNT		4
+
+#define XDPRX_EDID_NUM_BLOCKS		3
+#define XDPRX_EDID_BLOCK_SIZE		128
+#define XDPRX_EDID_LENGTH		(XDPRX_EDID_BLOCK_SIZE * \
+					 XDPRX_EDID_NUM_BLOCKS * 4)
 /*
- * DP Rx subsysetm register map, bitmask and offsets
+ * IRQ_HPD pulse for upstream device is 5ms as per
+ * the VESA standard
  */
-#define XDP_RX_LANE_CNT_SET_TPS3_MASK			0x40	
-#define XDP_RX_LANE_CNT_SET_ENHANCED_FRAME_CAP_MASK	0x80	
-#define DPRXSS_LANE_COUNT_SET_REG			0x04
-#define XDP_RX_LINK_ENABLE_REG				0x000	
-#define XDP_RX_DTG_REG					0x00C	
-#define XDP_RX_HPD_INTERRUPT_REG			0x02C
-#define XDP_RX_CRC_CONFIG_REG 				0x074
-#define XDP_RX_AUX_CLK_DIVIDER_REG			0x004	
-#define XDP_RX_INTERRUPT_CAUSE_REG			0x040
-#define XDP_RX_INTERRUPT_CAUSE_1_REG			0x048
-#define XDP_RX_INTERRUPT_MASK_REG                       0x014   
-#define XDP_RX_INTERRUPT_MASK_1_REG                     0x044   
-#define XDP_RX_SOFT_RESET_REG                           0x01C 
-#define XDP_RX_LINE_RESET_DISABLE			0x008
-#define XDP_RX_PIXEL_WIDTH				0x010
-#define XDP_RX_VIDEO_UNSUPPORTED_REG			0x094
-#define XDP_RX_CTRL_DPCD_REG				0x0B8
-#define XDP_RX_LINK_BW_SET_REG				0x09C
-#define XDP_RX_LANE_CNT_SET_REG				0x0A0	
-#define XDP_RX_LOCAL_EDID_VIDEO_REG			0x084
-#define XDP_RX_MST_CAP_REG				0x0D0	
-#define XDP_RX_TP_SET_REG				0x0A4	
-#define XDP_RX_SINK_COUNT_REG				0x0D4
-#define XDP_RX_LANE_COUNT_SET				0x404
-#define XDP_SET_POWER_STATE_REG				0x438
-#define XDP_LINK_BW_SET_REG				0x400
-#define XDP_RX_MSA_HRES					0x500	
-#define XDP_RX_MSA_VHEIGHT				0x514	
-#define XDP_RX_MSA_HTOTAL				0x510
-#define XDP_RX_MSA_VTOTAL				0x524
-#define XDP_RX_MSA_MISC0				0x528
-#define XDP_RX_MSA_MISC1				0x52C
-#define XDP_RX_MSA_MVID					0x530
-#define XDP_RX_MSA_NVID					0x534
-#define XDP_RX_PHY_REG					0x200	
-#define XDP_RX_MIN_VOLTAGE_SWING			0x214
-#define XDP_RX_CDR_CONTROL_CONFIG			0x21C
-#define XDP_RX_BS_IDLE_TIME				0x220
-#define DPRXSS_LINK_RATE				0x1E
-
-#define XDP_MASK_INTERLACE				BIT(0)
-#define XDP_CABLE_POWER_UP_MASK				BIT(0)
-#define XDP_RX_VIDEO_SOFT_RESET_MASK			BIT(0)
-#define XDP_RX_INTERRUPT_POWER_STATE_MASK		BIT(1)
-#define XDP_RX_HPD_INTERRUPT_ASSERT_MASK 		BIT(1)
-#define XDP_RX_INTERRUPT_NO_VIDEO_MASK			BIT(2)
-#define XDP_RX_INTERRUPT_VBLANK_MASK			BIT(3)
-#define XDP_RX_INTERRUPT_TRAINING_LOST_MASK		BIT(4)
-#define XDP_RX_CRC_EN_MASK				BIT(5)
-#define XDP_RX_INTERRUPT_VIDEO_MASK			BIT(6)
-#define XDP_RX_AUX_SOFT_RESET_MASK			BIT(7)
-#define XDP_RX_INTERRUPT_TRAINING_DONE_MASK		BIT(14)
-#define XDP_RX_INTERRUPT_BW_CHANGE_MASK			BIT(15)
-#define XDP_RX_TRNG_SET_AUX_RD_INTERVAL_SET		BIT(15)
-#define XDP_RX_INTERRUPT_TP1_MASK			BIT(16)
-#define XDP_RX_INTERRUPT_T2_MASK			BIT(17)
-#define XDP_RX_INTERRUPT_TP3_MASK			BIT(18)
-#define XDP_RX_INTERRUPT_ACCESS_ERROR_CNT_MASK		BIT(28)
-#define XDP_RX_INTERRUPT_ACCESS_LINK_QUAL_MASK		BIT(29)
-#define XDP_RX_INTERRUPT_TP4_MASK_1			BIT(31)
-#define XDP_RX_INTERRUPT_UNPLUG_MASK			BIT(31)
-#define XDP_RX_INTERRUPT_CRC_TEST_MASK			BIT(30)
-#define XDP_RX_INTERRUPT_ACCESS_LANE_SET_MASK 		BIT(30)
-
-#define XDP_RX_PHY_REG_GTPLL_RESET_MASK				BIT(0)
-#define XDP_RX_PHY_REG_GTRX_RESET_MASK				BIT(1)
-#define XDP_RX_PHY_REG_RESET_AT_TRAIN_ITER_MASK			BIT(23)
-#define XDP_RX_PHY_REG_RESET_AT_LINK_RATE_CHANGE_MASK		BIT(24)
-#define XDP_RX_PHY_REG_RESET_AT_TP1_START_MASK 			BIT(25)
-
-#define XDP_RX_TRAINING_INTERRUPT_MASK		(XDP_RX_INTERRUPT_TP1_MASK | \
-						XDP_RX_INTERRUPT_T2_MASK |\
-						XDP_RX_INTERRUPT_TP3_MASK | \
-						XDP_RX_INTERRUPT_POWER_STATE_MASK |\
-						XDP_RX_INTERRUPT_CRC_TEST_MASK |\
-						XDP_RX_INTERRUPT_BW_CHANGE_MASK)
-
-
-#define XDP_RX_TRAINING_INTERRUPT_MASK_1	(XDP_RX_INTERRUPT_TP4_MASK_1 |\
-    						XDP_RX_INTERRUPT_ACCESS_LANE_SET_MASK |\
-    						XDP_RX_INTERRUPT_ACCESS_LINK_QUAL_MASK |\
-    						XDP_RX_INTERRUPT_ACCESS_ERROR_CNT_MASK)
-
-#define XDP_RX_MIN_VOLTAGE_SWING_SET_PE_SHIFT			12
-#define XDP_RX_MIN_VOLTAGE_SWING_VS_SWEEP_CNT_SHIFT 		4
-#define XDP_RX_MIN_VOLTAGE_SWING_CR_OPT_SHIFT 			2
-#define XDP_RX_MIN_VOLTAGE_SWING_CR_OPT_VS_INC_4CNT  		1
-#define XDP_RX_MIN_VOLTAGE_SWING_MASK	\
-  				(1 | (XDP_RX_MIN_VOLTAGE_SWING_CR_OPT_VS_INC_4CNT << \
-				XDP_RX_MIN_VOLTAGE_SWING_CR_OPT_SHIFT) | \
-   				(4 << XDP_RX_MIN_VOLTAGE_SWING_VS_SWEEP_CNT_SHIFT) | \
-   				(1 << XDP_RX_MIN_VOLTAGE_SWING_SET_PE_SHIFT))
-
-
-
-
-
-#define EDID_NUM_BLOCKS	 	3
-#define EDID_LENGTH		(EDID_BLOCK_SIZE * EDID_NUM_BLOCKS * 4)
-
-#define XDPRX_DEFAULT_WIDTH		(7680)
-#define XDPRX_DEFAULT_HEIGHT		(4320)
-
-
-#define XDP_RX_INTERRUPT_ALL_MASK_1			0xFFFFFFFF
-#define XDP_RX_INTERRUPT_ALL_MASK			0xF9FFFFFF
-#define XDP_RX_AUX_DEFER_COUNT				6
-#define XDP_RX_AUX_DEFER_SHIFT				24	
-#define XDP_RX_HPD_PLUSE_DURATION_750			750
-#define XDP_RX_HPD_PLUSE_DURATION_5000			5000
-#define XDP_RX_HPD_INTERRUPT_LENGTH_US_SHIFT 		16
-#define XDP_DPCD_TRAIN_AUX_RD_INT_16MS			4
-#define Enable 						1
-#define Disable						0
-#define MHZ 						1000000
-#define EDID_BLOCKS_MAX 				10
-#define EDID_BLOCK_SIZE 				128
-#define XDP_RX_PHY_REG_INIT_MASK			0x38000000
-#define DP_BS_IDLE_TIMEOUT       			0x0091FFFF 
-#define XDP_RX_PHY_REG_RESET_ENBL_MASK			0x0
-#define XDP_RX_COLOR_FORMAT_MASK			GENMASK(2,1)
-#define XDP_RX_MSA_MISC0_MASK				GENMASK(2,0)
-#define XDP_RX_CDR_CONTROL_TDLOCK_DP159 		0x1388
-#define XDP_RX_CDR_CONTROL_DISABLE_TIMEOUT		0x40000000	
-#define XDP_RX_SET_TRNG_AUX_RD_INTERVAL_SHIFT  		8
-
-/*Vphy driver calls */
-
-void DpRxSs_LinkBandwidthHandler(u8 linkrate);
-void DpRxSs_PllResetHandler(void);
-
-enum xdprxss_pads {
-	XDPRX_PAD_SOURCE,
-	XDPRX_MEDIA_PADS,
-};
-
-u8 bpc[] = {6, 8, 10, 12, 16};
-
-/**
- * enum xdprxss_color_formats - DP RX supported Video Formats
- * @XDP_RX_COLOR_FORMAT_RGB: RGB color format
- * @XDP_RX_COLOR_FORMAT_422:YUV 422 color format
- * @XDP_RX_COLOR_FORMAT_444:YUV 444 color format
+#define XDPRX_HPD_PLUSE_5000		5000
+/*
+ * low going IRQ_HPD generated for upstream device
+ * as per the VESA standard
  */
-enum xdprxss_color_formats {
-	XDP_RX_COLOR_FORMAT_RGB,
-	XDP_RX_COLOR_FORMAT_422,
-	XDP_RX_COLOR_FORMAT_444,
-};
-
-/**
- * struct xdprxss_core - Core configuration DP Rx Subsystem device structure
- * @dev: Platform structure
- * @iomem: Base address of DP Rx Subsystem
- * @vid_edid_base: Bare Address of EDID block  
- * @irq: requested irq number
- * @lock: Mutex lock 
- * @axi_clk: Axi lite interface clock
- * @rx_lnk_clk: DP Rx GT clock
- * @rx_vid_clk: DP RX Video clock
- */
-
-struct xdprxss_core {
-	struct device *dev;
-	void __iomem *iomem;
-	void __iomem *vid_edid_base;
-	int irq;
-	struct mutex lock;
-	struct clk *axi_clk;
-	struct clk *rx_lnk_clk;
-	struct clk *rx_vid_clk;
-};
+#define XDPRX_HPD_PLUSE_750		750
 
 /**
  * struct xdprxss_state - DP Rx Subsystem device structure
- * @core: Core structure for DP Rx Subsystem
+ * @dev: Platform structure
  * @subdev: The v4l2 subdev structure
- * @ctrl_handler: control handler
  * @event: Holds the video unlock event
- * @formats: Active V4L2 formats on each pad
- * @default_format: default V4L2 media bus format
- * @detected_format: Detected stream format
  * @detected_timings: Detected Video timings
+ * @phy: pointer to phy instance
+ * @pad: media pad
+ * @axi_clk: Axi lite interface clock
+ * @rx_lnk_clk: DP Rx GT clock
+ * @rx_vid_clk: DP RX Video clock
+ * @dp_base: Base address of DP Rx Subsystem
+ * @edid_base: Bare Address of EDID block
+ * @lock: Lock is used for width, height, framerate variables
+ * @format: Active V4L2 format on each pad
  * @frame_interval: Captures the frame rate
- * @vip_format: format information corresponding to the active format
- * @lock: Mutex lock
- * @pads: media pads
- * @vip_format:Video Frame format
+ * @max_linkrate: Maximum supported link rate
+ * @max_lanecount: Maximux supported lane count
+ * @bpc: Bits per component
+ * @hdcp_enable: To indicate hdcp enabled or not
+ * @audio_enable: To indicate audio enabled or not
+ * @valid_stream: To indicate valid video
  * @streaming: Flag for storing streaming state
- * @Valid_Stream: To indicate valid video
- * @cable_connected: DP Rx cable connection state
- * @edid_user_blocks:Custom EDID blocks
- * @edid_blocks_max : Max EDID blocks supported 
- * @height:Active video frame height 
- * @width:Active video frame width
- * fmt:Frame format
- * @bpc:Bits per component
- * @framerate: Frame rate of detected video 
  * This structure contains the device driver related parameters
  */
 struct xdprxss_state {
-	struct xdprxss_core core;
+	struct device *dev;
 	struct v4l2_subdev subdev;
-	struct v4l2_ctrl_handler ctrl_handler;
 	struct v4l2_event event;
-	struct v4l2_mbus_framefmt formats[XDPRX_MEDIA_PADS];
-	struct v4l2_mbus_framefmt default_format;
-	struct v4l2_mbus_framefmt detected_format;
 	struct v4l2_dv_timings detected_timings;
-	struct v4l2_fract frame_interval;
-	struct workqueue_struct *work_queue;
-	struct delayed_work delayed_work_enable_hotplug;
-	struct mutex lock;
-	struct media_pad pads[XDPRX_MEDIA_PADS];
-	const struct xvip_video_format *vip_format;
-	bool streaming;
-	bool Valid_Stream;
-	bool cable_connected;
-	int edid_user_blocks;
-	int edid_blocks_max;
-	int height;
-	int width;
-	int fmt;
-	int bpc;
-	int framerate;
-	unsigned int  edid_user[EDID_BLOCKS_MAX * EDID_BLOCK_SIZE];
+	struct phy *phy[XDPRX_MAX_LANE_COUNT];
+	struct media_pad pad;
+	struct clk *axi_clk;
+	struct clk *rx_lnk_clk;
+	struct clk *rx_vid_clk;
+	void __iomem *dp_base;
+	void __iomem *edid_base;
+	/* protects width, height, framerate variables */
+	spinlock_t lock;
+	struct v4l2_mbus_framefmt format;
+	unsigned int frame_interval;
+	u32 max_linkrate;
+	u32 max_lanecount;
+	u32 bpc;
+	bool hdcp_enable;
+	bool audio_enable;
+	unsigned int valid_stream : 1;
+	unsigned int streaming : 1;
 };
 
- static const u8 xilinx_edid[384] = {
-0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x10, 0xAC, 0x47, 0x41,
-0x4C, 0x35, 0x37, 0x30, 0x20, 0x1B, 0x01, 0x04, 0xB5, 0x46, 0x27, 0x78,
-0x3A, 0x76, 0x45, 0xAE, 0x51, 0x33, 0xBA, 0x26, 0x0D, 0x50, 0x54, 0xA5,
-0x4B, 0x00, 0x81, 0x00, 0xB3, 0x00, 0xD1, 0x00, 0xA9, 0x40, 0x81, 0x80,
-0xD1, 0xC0, 0x01, 0x01, 0x01, 0x01, 0x4D, 0xD0, 0x00, 0xA0, 0xF0, 0x70,
-0x3E, 0x80, 0x30, 0x20, 0x35, 0x00, 0xBA, 0x89, 0x21, 0x00, 0x00, 0x1A,
-0x00, 0x00, 0x00, 0xFF, 0x00, 0x46, 0x46, 0x4E, 0x58, 0x4D, 0x37, 0x38,
-0x37, 0x30, 0x37, 0x35, 0x4C, 0x0A, 0x00, 0x00, 0x00, 0xFC, 0x00, 0x44,
-0x45, 0x4C, 0x4C, 0x20, 0x55, 0x50, 0x33, 0x32, 0x31, 0x38, 0x4B, 0x0A,
-0x00, 0x00, 0x00, 0xFD, 0x00, 0x18, 0x4B, 0x1E, 0xB4, 0x6C, 0x01, 0x0A,
-0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x02, 0x70, 0x02, 0x03, 0x1D, 0xF1,
-0x50, 0x10, 0x1F, 0x20, 0x05, 0x14, 0x04, 0x13, 0x12, 0x11, 0x03, 0x02,
-0x16, 0x15, 0x07, 0x06, 0x01, 0x23, 0x09, 0x1F, 0x07, 0x83, 0x01, 0x00,
-0x00, 0xA3, 0x66, 0x00, 0xA0, 0xF0, 0x70, 0x1F, 0x80, 0x30, 0x20, 0x35,
-0x00, 0xBA, 0x89, 0x21, 0x00, 0x00, 0x1A, 0x56, 0x5E, 0x00, 0xA0, 0xA0,
-0xA0, 0x29, 0x50, 0x30, 0x20, 0x35, 0x00, 0xBA, 0x89, 0x21, 0x00, 0x00,
-0x1A, 0x7C, 0x39, 0x00, 0xA0, 0x80, 0x38, 0x1F, 0x40, 0x30, 0x20, 0x3A,
-0x00, 0xBA, 0x89, 0x21, 0x00, 0x00, 0x1A, 0xA8, 0x16, 0x00, 0xA0, 0x80,
-0x38, 0x13, 0x40, 0x30, 0x20, 0x3A, 0x00, 0xBA, 0x89, 0x21, 0x00, 0x00,
-0x1A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x47, 0x70, 0x12, 0x79, 0x00, 0x00, 0x12, 0x00, 0x16,
-0x82, 0x10, 0x10, 0x00, 0xFF, 0x0E, 0xDF, 0x10, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x44, 0x45, 0x4C, 0x47, 0x41, 0x4C, 0x35, 0x37, 0x30, 0x03, 0x01,
-0x50, 0x70, 0x92, 0x01, 0x84, 0xFF, 0x1D, 0xC7, 0x00, 0x1D, 0x80, 0x09,
-0x00, 0xDF, 0x10, 0x2F, 0x00, 0x02, 0x00, 0x04, 0x00, 0xC1, 0x42, 0x01,
-0x84, 0xFF, 0x1D, 0xC7, 0x00, 0x2F, 0x80, 0x1F, 0x00, 0xDF, 0x10, 0x30,
-0x00, 0x02, 0x00, 0x04, 0x00, 0xA8, 0x4E, 0x01, 0x04, 0xFF, 0x0E, 0xC7,
-0x00, 0x2F, 0x80, 0x1F, 0x00, 0xDF, 0x10, 0x61, 0x00, 0x02, 0x00, 0x09,
-0x00, 0x97, 0x9D, 0x01, 0x04, 0xFF, 0x0E, 0xC7, 0x00, 0x2F, 0x80, 0x1F,
-0x00, 0xDF, 0x10, 0x2F, 0x00, 0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x90,
+/*
+ * This is a default EDID data loaded to EDID memory. It allows the source
+ * to get edid before application start on DP Rx.User can load their
+ * custom EDID data using set_edid functions call
+ */
+static u8 xilinx_edid[384] = {
+	0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x10, 0xac, 0x47, 0x41,
+	0x4c, 0x35, 0x37, 0x30, 0x20, 0x1b, 0x01, 0x04, 0xb5, 0x46, 0x27, 0x78,
+	0x3a, 0x76, 0x45, 0xae, 0x51, 0x33, 0xba, 0x26, 0x0d, 0x50, 0x54, 0xa5,
+	0x4b, 0x00, 0x81, 0x00, 0xb3, 0x00, 0xd1, 0x00, 0xa9, 0x40, 0x81, 0x80,
+	0xd1, 0xc0, 0x01, 0x01, 0x01, 0x01, 0x4d, 0xd0, 0x00, 0xa0, 0xf0, 0x70,
+	0x3e, 0x80, 0x30, 0x20, 0x35, 0x00, 0xba, 0x89, 0x21, 0x00, 0x00, 0x1a,
+	0x00, 0x00, 0x00, 0xff, 0x00, 0x46, 0x46, 0x4e, 0x58, 0x4d, 0x37, 0x38,
+	0x37, 0x30, 0x37, 0x35, 0x4c, 0x0a, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x44,
+	0x45, 0x4c, 0x4c, 0x20, 0x55, 0x50, 0x33, 0x32, 0x31, 0x38, 0x4b, 0x0a,
+	0x00, 0x00, 0x00, 0xfd, 0x00, 0x18, 0x4b, 0x1e, 0xb4, 0x6c, 0x01, 0x0a,
+	0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x02, 0x70, 0x02, 0x03, 0x1d, 0xf1,
+	0x50, 0x10, 0x1f, 0x20, 0x05, 0x14, 0x04, 0x13, 0x12, 0x11, 0x03, 0x02,
+	0x16, 0x15, 0x07, 0x06, 0x01, 0x23, 0x09, 0x1f, 0x07, 0x83, 0x01, 0x00,
+	0x00, 0xa3, 0x66, 0x00, 0xa0, 0xf0, 0x70, 0x1f, 0x80, 0x30, 0x20, 0x35,
+	0x00, 0xba, 0x89, 0x21, 0x00, 0x00, 0x1a, 0x56, 0x5e, 0x00, 0xa0, 0xa0,
+	0xa0, 0x29, 0x50, 0x30, 0x20, 0x35, 0x00, 0xba, 0x89, 0x21, 0x00, 0x00,
+	0x1a, 0x7c, 0x39, 0x00, 0xA0, 0x80, 0x38, 0x1f, 0x40, 0x30, 0x20, 0x3a,
+	0x00, 0xba, 0x89, 0x21, 0x00, 0x00, 0x1a, 0xa8, 0x16, 0x00, 0xa0, 0x80,
+	0x38, 0x13, 0x40, 0x30, 0x20, 0x3a, 0x00, 0xba, 0x89, 0x21, 0x00, 0x00,
+	0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x47, 0x70, 0x12, 0x79, 0x00, 0x00, 0x12, 0x00, 0x16,
+	0x82, 0x10, 0x10, 0x00, 0xff, 0x0e, 0xdf, 0x10, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x44, 0x45, 0x4c, 0x47, 0x41, 0x4c, 0x35, 0x37, 0x30, 0x03, 0x01,
+	0x50, 0x70, 0x92, 0x01, 0x84, 0xff, 0x1d, 0xc7, 0x00, 0x1d, 0x80, 0x09,
+	0x00, 0xdf, 0x10, 0x2f, 0x00, 0x02, 0x00, 0x04, 0x00, 0xc1, 0x42, 0x01,
+	0x84, 0xff, 0x1d, 0xc7, 0x00, 0x2f, 0x80, 0x1f, 0x00, 0xdf, 0x10, 0x30,
+	0x00, 0x02, 0x00, 0x04, 0x00, 0xa8, 0x4e, 0x01, 0x04, 0xff, 0x0e, 0xc7,
+	0x00, 0x2f, 0x80, 0x1f, 0x00, 0xdf, 0x10, 0x61, 0x00, 0x02, 0x00, 0x09,
+	0x00, 0x97, 0x9d, 0x01, 0x04, 0xff, 0x0e, 0xc7, 0x00, 0x2f, 0x80, 0x1f,
+	0x00, 0xdf, 0x10, 0x2f, 0x00, 0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x90,
 };
 
-static const struct v4l2_dv_timings_cap xdprxss_dv_timings_cap = {
-	.type = V4L2_DV_BT_656_1120,
-	.reserved = { 0 },
-
-	V4L2_INIT_BT_TIMINGS(
-		800, 7680,			/* min/max width */
-		600, 4320,			/* min/max height */
-		25000000, 297000000,		/* min/max pixelclock */
-		V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
-			V4L2_DV_BT_STD_GTF | V4L2_DV_BT_STD_CVT,
-		V4L2_DV_BT_CAP_INTERLACED | V4L2_DV_BT_CAP_PROGRESSIVE |
-			V4L2_DV_BT_CAP_REDUCED_BLANKING |
-			V4L2_DV_BT_CAP_CUSTOM
-	)
+static const u32 xdprxss_supported_mbus_fmts[] = {
+	MEDIA_BUS_FMT_UYVY8_1X16,
+	MEDIA_BUS_FMT_VUY8_1X24,
+	MEDIA_BUS_FMT_RBG888_1X24,
+	MEDIA_BUS_FMT_UYVY10_1X20,
+	MEDIA_BUS_FMT_VUY10_1X30,
+	MEDIA_BUS_FMT_RBG101010_1X30,
 };
+
+#define XLNX_V4L2_DV_BT_2048X1080P60 { \
+	.type = V4L2_DV_BT_656_1120, \
+	V4L2_INIT_BT_TIMINGS(2048, 1080, 0, \
+		V4L2_DV_HSYNC_POS_POL | V4L2_DV_VSYNC_POS_POL, \
+		148500000, 88, 44, 20, 4, 5, 36, 0, 0, 0, \
+		V4L2_DV_BT_STD_CEA861) \
+}
+
+#define XLNX_V4L2_DV_BT_2048X1080I50 { \
+	.type = V4L2_DV_BT_656_1120, \
+	V4L2_INIT_BT_TIMINGS(2048, 1080, 1, \
+		V4L2_DV_HSYNC_POS_POL | V4L2_DV_VSYNC_POS_POL, \
+		74250000, 274, 44, 274, 2, 5, 15, 3, 5, 15, \
+		V4L2_DV_BT_STD_CEA861) \
+}
+
+#define XLNX_V4L2_DV_BT_2048X1080I60 { \
+	.type = V4L2_DV_BT_656_1120, \
+	V4L2_INIT_BT_TIMINGS(2048, 1080, 1, \
+		V4L2_DV_HSYNC_POS_POL | V4L2_DV_VSYNC_POS_POL, \
+		74250000, 66, 20, 66, 2, 5, 15, 3, 5, 15, \
+		V4L2_DV_BT_STD_CEA861) \
+}
+
+#define XLNX_V4L2_DV_BT_2048X1080P50 { \
+	.type = V4L2_DV_BT_656_1120, \
+	V4L2_INIT_BT_TIMINGS(2048, 1080, 0, \
+		V4L2_DV_HSYNC_POS_POL | V4L2_DV_VSYNC_POS_POL, \
+		148500000, 400, 44, 148, 4, 5, 36, 0, 0, 0, \
+		V4L2_DV_BT_STD_CEA861) \
+}
+
+#define XLNX_V4L2_DV_BT_7680X4320P30 { \
+	.type = V4L2_DV_BT_656_1120, \
+	V4L2_INIT_BT_TIMINGS(7680, 4320, 0, \
+		V4L2_DV_HSYNC_POS_POL | V4L2_DV_VSYNC_POS_POL, \
+		74250000, 552, 176, 592, 16, 20, 44, 0, 0, 0, \
+		V4L2_DV_BT_STD_CEA861) \
+}
+
+static const struct v4l2_dv_timings fmt_cap[] = {
+	V4L2_DV_BT_CEA_1280X720P25,
+	V4L2_DV_BT_CEA_1280X720P30,
+	V4L2_DV_BT_CEA_1280X720P50,
+	V4L2_DV_BT_CEA_1280X720P60,
+	V4L2_DV_BT_CEA_1920X1080P25,
+	V4L2_DV_BT_CEA_1920X1080P30,
+	V4L2_DV_BT_CEA_1920X1080P50,
+	V4L2_DV_BT_CEA_1920X1080P60,
+	V4L2_DV_BT_CEA_1920X1080I50,
+	V4L2_DV_BT_CEA_1920X1080I60,
+	V4L2_DV_BT_CEA_3840X2160P30,
+	V4L2_DV_BT_CEA_3840X2160P50,
+	V4L2_DV_BT_CEA_3840X2160P60,
+	V4L2_DV_BT_CEA_4096X2160P25,
+	V4L2_DV_BT_CEA_4096X2160P30,
+	V4L2_DV_BT_CEA_4096X2160P50,
+	V4L2_DV_BT_CEA_4096X2160P60,
+
+	XLNX_V4L2_DV_BT_2048X1080I50,
+	XLNX_V4L2_DV_BT_2048X1080I60,
+	XLNX_V4L2_DV_BT_2048X1080P50,
+	XLNX_V4L2_DV_BT_2048X1080P60,
+	XLNX_V4L2_DV_BT_7680X4320P30,
+};
+
+struct xdprxss_dv_map {
+	u32 width;
+	u32 height;
+	u32 fps;
+	struct v4l2_dv_timings timing;
+};
+
+static const struct xdprxss_dv_map xdprxss_dv_timings[] = {
+	/* HD - 1280x720p25 */
+	{ 1280, 720, 25, V4L2_DV_BT_CEA_1280X720P25 },
+	/* HD - 1280x720p30 */
+	{ 1280, 720, 30, V4L2_DV_BT_CEA_1280X720P30 },
+	/* HD - 1280x720p50 */
+	{ 1280, 720, 50, V4L2_DV_BT_CEA_1280X720P50 },
+	/* HD - 1280x720p60 */
+	{ 1280, 720, 60, V4L2_DV_BT_CEA_1280X720P60 },
+	/* HD - 1920x1080p25 */
+	{ 1920, 1080, 25, V4L2_DV_BT_CEA_1920X1080P25 },
+	/* HD - 1920x1080p30 */
+	{ 1920, 1080, 30, V4L2_DV_BT_CEA_1920X1080P30 },
+	/* HD - 1920x1080p50 */
+	{ 1920, 1080, 50, V4L2_DV_BT_CEA_1920X1080P50 },
+	/* HD - 1920x1080p60 */
+	{ 1920, 1080, 60, V4L2_DV_BT_CEA_1920X1080P60 },
+	/* HD - 1920x1080i50 */
+	{ 1920, 540, 25, V4L2_DV_BT_CEA_1920X1080I50 },
+	/* HD - 1920x1080i59.94 */
+	/* HD - 1920x1080i60 */
+	{ 1920, 540, 30, V4L2_DV_BT_CEA_1920X1080I60 },
+	{ 3840, 2160, 30, V4L2_DV_BT_CEA_3840X2160P30 },
+	{ 3840, 2160, 50, V4L2_DV_BT_CEA_3840X2160P50 },
+	{ 3840, 2160, 60, V4L2_DV_BT_CEA_3840X2160P60 },
+	{ 4096, 2160, 25, V4L2_DV_BT_CEA_4096X2160P25 },
+	{ 4096, 2160, 30, V4L2_DV_BT_CEA_4096X2160P30 },
+	{ 4096, 2160, 50, V4L2_DV_BT_CEA_4096X2160P50 },
+	{ 4096, 2160, 60, V4L2_DV_BT_CEA_4096X2160P60 },
+	/* HD - 2048x1080i50 */
+	{ 2048, 540, 25, XLNX_V4L2_DV_BT_2048X1080I50 },
+	/* HD - 2048x1080i59.94 */
+	/* HD - 2048x1080i60 */
+	{ 2048, 540, 30, XLNX_V4L2_DV_BT_2048X1080I60 },
+	/* 3G - 2048x1080p50 */
+	{ 2048, 1080, 50, XLNX_V4L2_DV_BT_2048X1080P50 },
+	/* 3G - 2048x1080p59.94 */
+	/* 3G - 2048x1080p60 */
+	{ 2048, 1080, 60, XLNX_V4L2_DV_BT_2048X1080P60 },
+	{ 7680, 4320, 30, XLNX_V4L2_DV_BT_7680X4320P30 }
+};
+
 static inline struct xdprxss_state *
 to_xdprxssstate(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct xdprxss_state, subdev);
 }
 
-/*
- * Register related operations
- */
-static inline u32 xdprxss_read(struct xdprxss_core *xdprxss, u32 addr)
+/* Register related operations */
+static inline u32 xdprxss_read(struct xdprxss_state *xdprxss, u32 addr)
 {
-	return ioread32(xdprxss->iomem + addr);
+	return ioread32(xdprxss->dp_base + addr);
 }
 
-static inline void xdprxss_write(struct xdprxss_core *xdprxss, u32 addr,
-				u32 value)
+static inline void xdprxss_write(struct xdprxss_state *xdprxss, u32 addr,
+				 u32 value)
 {
-	iowrite32(value, xdprxss->iomem + addr);
+	iowrite32(value, xdprxss->dp_base + addr);
 }
 
-static inline void xdprxss_clr(struct xdprxss_core *xdprxss, u32 addr,
-				u32 clr)
+static inline void xdprxss_clr(struct xdprxss_state *xdprxss, u32 addr,
+			       u32 clr)
 {
 	xdprxss_write(xdprxss, addr, xdprxss_read(xdprxss, addr) & ~clr);
 }
 
-static inline void xdprxss_set(struct xdprxss_core *xdprxss, u32 addr,
-				u32 set)
+static inline void xdprxss_set(struct xdprxss_state *xdprxss, u32 addr,
+			       u32 set)
 {
 	xdprxss_write(xdprxss, addr, xdprxss_read(xdprxss, addr) | set);
 }
 
-static void xdprxss_enablelnk(struct xdprxss_core *core, u32 mask)
+static inline void xdprxss_dpcd_update_start(struct xdprxss_state *xdprxss)
 {
-	xdprxss_write(core,XDP_RX_LINK_ENABLE_REG,mask);
-}
-static inline u32 xdprxss_power_preset(struct xdprxss_core *core)
-{
-	return ( XDP_CABLE_POWER_UP_MASK & xdprxss_read(core,XDP_SET_POWER_STATE_REG));
+	iowrite32(0x1, xdprxss->dp_base + XDPRX_CTRL_DPCD_REG);
 }
 
-static inline void xedid_write(struct xdprxss_core *xdprxss, u32 addr, u32 value)
+static inline void xdprxss_dpcd_update_end(struct xdprxss_state *xdprxss)
 {
- 	iowrite32(value,xdprxss->vid_edid_base + addr);
-}
-
-static void xdprxss_dpcd_write(struct xdprxss_core *core,u32 addr,u32 val)
-{
-	xdprxss_write(core,XDP_RX_CTRL_DPCD_REG,Enable);
-	xdprxss_write(core,addr,val);	
-	xdprxss_write(core,XDP_RX_CTRL_DPCD_REG,Disable);
-}
-
-static void xdprxss_set_linkrate(struct xdprxss_core *core, u32 value)
-{
-	xdprxss_dpcd_write(core,XDP_RX_LINK_BW_SET_REG,value);
-}
-
-static void xdprxss_set_lane_count(struct xdprxss_core *core, u32 value)
-{
-	value |=(XDP_RX_LANE_CNT_SET_ENHANCED_FRAME_CAP_MASK |
-				XDP_RX_LANE_CNT_SET_TPS3_MASK);
-	xdprxss_dpcd_write(core,XDP_RX_LANE_CNT_SET_REG,value);
-}
-
-static void xdprxss_disableintr(struct xdprxss_core *core,u32 addr,u32 mask)
-{
-	xdprxss_set(core,addr,mask);
-}
-
-static void xdprxss_enableintr(struct xdprxss_core *core,u32 addr,u32 mask)
-{
-	xdprxss_clr(core,addr,mask);
-}
-
-static void xdprxss_dtg_reset(struct xdprxss_core * core)
-{
-	xdprxss_set(core,XDP_RX_DTG_REG,Disable);
-	xdprxss_set(core,XDP_RX_DTG_REG,Enable);
-}
-
-	/*  Assert HPD Interrupt*/
-static void xdprxss_generate_hpd(struct xdprxss_core *core,u32 PluseDuration)
-{
-	xdprxss_write(core,XDP_RX_HPD_INTERRUPT_REG,
-			(PluseDuration << XDP_RX_HPD_INTERRUPT_LENGTH_US_SHIFT) | 
-			XDP_RX_HPD_INTERRUPT_ASSERT_MASK);
-
+	iowrite32(0x0, xdprxss->dp_base + XDPRX_CTRL_DPCD_REG);
 }
 
 /**
- * xdprxss_soft_reset - software reset
- * @core: pointer to driver core structure
- * @addr: software reset register address
- * @val : value to be written in the register 
- * This function resets the AUX logic and video logic in DP-RX core
- *
+ * xdprxss_dpcd_update - Update the DPCD registers
+ * @xdprxss: pointer to driver state
+ * @addr: DPCD register address
+ * @val: Value to be override
+ * This function is used to override the DPCD registers set.
+ * DPCD register set is ranges from 0x084-0x0f0.
+ * Register 0x0B8(direct_dpcd_access) must be set to 1 to
+ * override DPCD values
  */
-static void xdprxss_soft_reset(struct xdprxss_core *core,u32 addr,u8 val)
+static inline void xdprxss_dpcd_update(struct xdprxss_state *xdprxss,
+				       u32 addr, u32 val)
 {
-
-	if(val & XDP_RX_AUX_SOFT_RESET_MASK){
-		xdprxss_set(core,addr,XDP_RX_AUX_SOFT_RESET_MASK);
-		xdprxss_clr(core,addr,XDP_RX_AUX_SOFT_RESET_MASK);
-  	}
-	else if (val & XDP_RX_VIDEO_SOFT_RESET_MASK){
-		xdprxss_set(core,addr,XDP_RX_VIDEO_SOFT_RESET_MASK);
-		xdprxss_clr(core,addr,XDP_RX_VIDEO_SOFT_RESET_MASK);
-	}
-}
- /**
- *@core: pointer to driver core structure
- *@pixel_width:pixel width to be configured
- * This function configures the number of pixels output 
- */
-static void xdprxss_set_pixel_width(struct xdprxss_core *core,u32 pixel_width){
-
-	u32 ReadVal;
-
-	ReadVal = xdprxss_read(core, XDP_RX_DTG_REG);
-	xdprxss_write(core, XDP_RX_DTG_REG,(ReadVal & 0xFFFFFFFE));	
-	xdprxss_write(core,XDP_RX_PIXEL_WIDTH,pixel_width);
-	ReadVal = xdprxss_read(core,XDP_RX_DTG_REG);
-	xdprxss_write(core, XDP_RX_DTG_REG,(ReadVal | 0x1));
-	
+	xdprxss_write(xdprxss, addr, val);
 }
 
-/**
- * xdprxss_get_detected_timings - Get detected dv timings  
- * @state: pointer to driver state
- *
- * This function updates the dv timings structure and frame rate by reading MSA values
- *
- * Return: 0 for success else errors
- */
-static int xdprxss_get_detected_timings(struct xdprxss_state *state){
-	
-	struct xdprxss_core *core = &state->core;
-	struct v4l2_bt_timings *bt = &state->detected_timings.bt;
-
-	u32 rxMsaMVid,rxMsaNVid,rxMsamisc,recv_clk_freq,linkrate;
-	u16 vres_total,hres_total,framerate,hres,vres,lanecount;
-	u8 rxMsabpc,pixel_width;
-
-	rxMsaMVid = xdprxss_read(core,XDP_RX_MSA_MVID);
-	rxMsaNVid = xdprxss_read(core,XDP_RX_MSA_NVID);
-	
-	hres = xdprxss_read(core,XDP_RX_MSA_HRES);
-	vres = xdprxss_read(core,XDP_RX_MSA_VHEIGHT);
-	rxMsamisc = xdprxss_read(core,XDP_RX_MSA_MISC0);
-
-	vres_total = xdprxss_read(core,XDP_RX_MSA_VTOTAL);
-	hres_total = xdprxss_read(core,XDP_RX_MSA_HTOTAL);
-	linkrate = xdprxss_read(core,XDP_LINK_BW_SET_REG);	
-	lanecount = xdprxss_read(core,XDP_RX_LANE_COUNT_SET);	
-	
-	recv_clk_freq = ((linkrate*27)*rxMsaMVid)/rxMsaNVid;
-	
-	if((recv_clk_freq*MHZ) > 540000000 && (lanecount==4)){
-		pixel_width = 0x4;
-	}
-	else if((recv_clk_freq*MHZ) > 270000000 && (lanecount!=1)){
-		pixel_width = 0x2;
-	}
-	else{
-		pixel_width = 0x1;
-	}
-	xdprxss_write(core,XDP_RX_LINE_RESET_DISABLE,0x1);
-	xdprxss_set_pixel_width(core,pixel_width);
-	
-	framerate  = ((recv_clk_freq*MHZ)/(hres_total * vres_total) < 0 ?
-		(recv_clk_freq*MHZ)/(hres_total * vres_total) :
-		(recv_clk_freq*MHZ)/(hres_total * vres_total));
-
-	framerate = (framerate > 0) ? 
-		roundup(framerate, 5) : 0;
-	
-	state->width = hres;
-	state->height = vres;
-	state->fmt = (0x3 & rxMsamisc >> 1);
-	rxMsabpc =((rxMsamisc >> 5) & XDP_RX_MSA_MISC0_MASK);
-	state->bpc = bpc[rxMsabpc];
-	state->detected_timings.type = V4L2_DV_BT_656_1120;
-	state->detected_timings.bt.standards = V4L2_DV_BT_STD_CEA861;
-	state->detected_timings.bt.flags = V4L2_DV_FL_IS_CE_VIDEO;	
-	
-	bt->interlaced = xdprxss_read(core, XDP_RX_MSA_MISC1) & XDP_MASK_INTERLACE ?
-		V4L2_DV_INTERLACED : V4L2_DV_PROGRESSIVE;
-	bt->width = hres;
-	bt->height = vres;
-	bt->vsync = vres_total - vres;
-	bt->hsync = hres_total - hres;
-	bt->pixelclock = vres_total * hres_total * framerate;
-	if (bt->interlaced == V4L2_DV_INTERLACED) {
-		bt->height *= 2;
-		bt->il_vsync = bt->vsync + 1;
-		bt->pixelclock /= 2;
-	}
-	
-	state->framerate = framerate;
-	dev_dbg(core->dev, "Stream width = %d height = %d framerate %d \n",
-			hres,vres,framerate);
-	
-	return 0;
-
-}
 /**
  * xdprxss_get_stream_properties - Get DP Rx stream properties
  * @state: pointer to driver state
- *
- * This function decodes the stream  to get
- * stream properties like width, height,format, picture type (interlaced/progressive),
- * etc.
+ * This function decodes the stream to get stream properties
+ * like width, height, format, picture type (interlaced/progressive),etc.
  *
  * Return: 0 for success else errors
  */
-static int xdprxss_get_stream_properties(struct xdprxss_state *state){
+static int xdprxss_get_stream_properties(struct xdprxss_state *state)
+{
+	struct v4l2_mbus_framefmt *format = &state->format;
+	struct v4l2_bt_timings *bt = &state->detected_timings.bt;
 
-	struct xdprxss_core *core = &state->core;
-	struct v4l2_mbus_framefmt *format = &state->formats[0];
-	
-	xdprxss_get_detected_timings(state);
-	switch (state->fmt){
-	case XDP_RX_COLOR_FORMAT_422:
-		if(state->bpc == 10){
+	u32 rxmsa_mvid, rxmsa_nvid, rxmsa_misc, recv_clk_freq, linkrate;
+	u16 vres_total, hres_total, framerate, lanecount;
+	u8 pixel_width, fmt;
+	u16 read_val;
+
+	rxmsa_mvid = xdprxss_read(state, XDPRX_MSA_MVID_REG);
+	rxmsa_nvid = xdprxss_read(state, XDPRX_MSA_NVID_REG);
+
+	bt->width = xdprxss_read(state, XDPRX_MSA_HRES_REG);
+
+	bt->height = xdprxss_read(state, XDPRX_MSA_VHEIGHT_REG);
+	rxmsa_misc = xdprxss_read(state, XDPRX_MSA_MISC0_REG);
+
+	vres_total = xdprxss_read(state, XDPRX_MSA_VTOTAL_REG);
+	hres_total = xdprxss_read(state, XDPRX_MSA_HTOTAL_REG);
+	linkrate = xdprxss_read(state, XDPRX_LINK_BW_REG);
+	lanecount = xdprxss_read(state, XDPRX_LANE_COUNT_REG);
+
+	recv_clk_freq = (linkrate * 27 * rxmsa_mvid) / rxmsa_nvid;
+
+	if (recv_clk_freq > 540 && lanecount == 4)
+		pixel_width = 0x4;
+	else if (recv_clk_freq > 270 && (lanecount != 1))
+		pixel_width = 0x2;
+	else
+		pixel_width = 0x1;
+
+	framerate = (recv_clk_freq * MHZ) / (hres_total * vres_total);
+	framerate = roundup(framerate, 5);
+	xdprxss_write(state, XDPRX_LINERST_DIS_REG, 0x1);
+	/* set pixel mode as per lane count and reset the DTG */
+	read_val = xdprxss_read(state, XDPRX_DTG_REG);
+	xdprxss_write(state, XDPRX_DTG_REG, (read_val & XDPRX_DTG_DIS_MASK));
+	xdprxss_write(state, XDPRX_PIXEL_WIDTH_REG, pixel_width);
+	read_val = xdprxss_read(state, XDPRX_DTG_REG);
+	xdprxss_write(state, XDPRX_DTG_REG, (read_val | 0x1));
+	fmt = FIELD_GET(XDPRX_MSA_FMT_MASK, rxmsa_misc);
+	state->bpc = FIELD_GET(XDPRX_MSA_BPC_MASK, rxmsa_misc);
+
+	switch (fmt) {
+	case XDPRX_COLOR_FORMAT_422:
+		if (state->bpc == 10)
 			format->code = MEDIA_BUS_FMT_UYVY10_1X20;
-			dev_dbg(core->dev,"XVIDC_CSF_YCRCB_422 -> MEDIA_BUS_FMT_UYVY10_1X20\n");
-		}else{
+		else
 			format->code = MEDIA_BUS_FMT_UYVY8_1X16;
-			dev_dbg(core->dev,"XVIDC_CSF_YCRCB_422 -> MEDIA_BUS_FMT_UYVY8_1X16\n");
-		}
-	break;
-	case XDP_RX_COLOR_FORMAT_444:
-		if(state->bpc == 10){
+		break;
+	case XDPRX_COLOR_FORMAT_444:
+		if (state->bpc == 10)
 			format->code = MEDIA_BUS_FMT_VUY10_1X30;
-			dev_dbg(core->dev,"XVIDC_CSF_YCRCB_444 -> MEDIA_BUS_FMT_VUY10_1X30\n");
-		}else {
+		else
 			format->code = MEDIA_BUS_FMT_VUY8_1X24;
-			dev_dbg(core->dev,"XVIDC_CSF_YCRCB_444 -> MEDIA_BUS_FMT_VUY8_1X24\n");
-		}
-	break;
-	case XDP_RX_COLOR_FORMAT_RGB:
-		if(state->bpc == 10){
+		break;
+	case XDPRX_COLOR_FORMAT_RGB:
+		if (state->bpc == 10)
 			format->code = MEDIA_BUS_FMT_RBG101010_1X30;
-			dev_dbg(core->dev,"XVIDC_CSF_RGB -> MEDIA_BUS_FMT_RBG101010_1X30\n");
-		}else {
+		else
 			format->code = MEDIA_BUS_FMT_RBG888_1X24;
-			dev_dbg(core->dev,"XVIDC_CSF_RGB -> ,MEDIA_BUS_FMT_RBG888_1X24\n");
-		}
-	break;
+		break;
 	default:
+		dev_err(state->dev, "Unsupported color format\n");
 
-	dev_err(core->dev, "Unsupported color format \n");
-	return -EINVAL;
+		return -EINVAL;
 	}
 
-	format->width = state->width;
-	format->height = state->height;
-	
-	state->detected_format.width =  format->width;
-	state->detected_format.height = format->height;
-	state->detected_format.code = format->code;
-	state->detected_format.field = V4L2_FIELD_NONE;
-	state->detected_format.colorspace = V4L2_COLORSPACE_SRGB; 
-	state->detected_format.xfer_func = V4L2_XFER_FUNC_DEFAULT;
-	state->detected_format.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
-	state->detected_format.quantization = V4L2_QUANTIZATION_DEFAULT;
-	state->Valid_Stream = true;		
-	
-	dev_dbg(core->dev,"detected properties : width%d height %d framerate %d \n\r",
-					state->width,state->height,state->framerate);
+	spin_lock(&state->lock);
+	format->width = bt->width;
+	format->height = bt->height;
+	format->colorspace = V4L2_COLORSPACE_REC709;
+	format->xfer_func = V4L2_XFER_FUNC_DEFAULT;
+	format->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+	format->quantization = V4L2_QUANTIZATION_DEFAULT;
+	format->field = V4L2_FIELD_NONE;
+	state->frame_interval = framerate;
+	spin_unlock(&state->lock);
+
+	dev_dbg(state->dev, "detected properties : width %d height %d\n",
+		bt->width, bt->height);
+
 	return 0;
 }
- /**
-  * @core: pointer to driver core structure
-  * @edid_ptr: pointer to the edid block
-  * This function loads the edid data to EDID IP
-  */
-static void xdprxss_load_edid(struct xdprxss_core *core , u8 *edid_ptr)
+
+static void xdprxss_set_training_params(struct xdprxss_state *xdprxss)
 {
-	unsigned int Index,Offset;
-	for (Index = 0 ; Index < (EDID_LENGTH) ; Index = Index + (16 * 4)) {
-    		for (Offset = Index ; Offset < (Index + (16 * 4)) ; Offset = Offset + 4) {
-		xedid_write(core, Offset, edid_ptr[(Index/4)+1]);
-		}
+	unsigned int offset;
+
+	/*
+	 * This register is used to set a minimum value which which must be met
+	 * As per the Display Port protocol.The internal logic forces training
+	 * to fail until this value is met.Please refer to PG 300
+	 * https://www.xilinx.com/support/documentation/ip_documentation/dp_rx_subsystem/v2_1/pg233-displayport-rx-subsystem.pdf
+	 */
+	xdprxss_write(xdprxss, XDPRX_MINVOLT_SWING_REG, XDPRX_MIN_VS_MASK);
+	xdprxss_write(xdprxss, XDPRX_AUX_CLKDIV_REG,
+		      xdprxss_read(xdprxss, XDPRX_AUX_CLKDIV_REG) |
+		      FIELD_PREP(XDPRX_AUX_DEFER_MASK, XDPRX_AUX_DEFER_COUNT));
+
+	xdprxss_dpcd_update_start(xdprxss);
+	xdprxss_dpcd_update(xdprxss, XDPRX_TP_SET_REG,
+			    (XDPRX_AUX_RDINT_16MS << XDPRX_AUX_RDINT_SHIFT) |
+			    XDPRX_AUX_READINTRVL_REG);
+	xdprxss_dpcd_update_end(xdprxss);
+
+	xdprxss_clr(xdprxss, XDPRX_INTR_MASK_REG, XDPRX_INTR_ALL_MASK);
+
+	/* Load edid data to EDID memory block */
+	for (offset = 0; offset < XDPRX_EDID_LENGTH; offset = offset + 4) {
+		iowrite32((uint32_t)xilinx_edid[offset / 4],
+			  xdprxss->edid_base + offset);
 	}
+	xdprxss_write(xdprxss, XDPRX_LOCAL_EDID_REG, 0x1);
 
-	for (Offset = 0 ; Offset < (EDID_LENGTH) ; Offset = Offset + 4) {
-    		xedid_write(core, Offset, edid_ptr[Offset/4]);
-  	}
+	/* Disable all the interrupts */
+	xdprxss_set(xdprxss, XDPRX_INTR_MASK_REG, XDPRX_INTR_ALL_MASK);
+
+	/* Enable trainng related interrupts */
+	xdprxss_clr(xdprxss, XDPRX_INTR_MASK_REG, XDPRX_INTR_TRNG_MASK);
+	xdprxss_write(xdprxss, XDPRX_AUX_CLKDIV_REG,
+		      xdprxss_read(xdprxss, XDPRX_AUX_CLKDIV_REG) |
+		      FIELD_PREP(XDPRX_AUX_DEFER_MASK, XDPRX_AUX_DEFER_COUNT));
+	xdprxss_write(xdprxss, XDPRX_BSIDLE_TIME_REG, XDPRX_BSIDLE_TMOUT_VAL);
+	xdprxss_clr(xdprxss, XDPRX_CRC_CONFIG_REG, XDPRX_CRC_EN_MASK);
+	xdprxss_write(xdprxss, XDPRX_LINK_ENABLE_REG, 0x1);
 }
- /**
-  * This funtion configures the DP RX training paramerters 
-  */
-static void set_dplink_trining_params(struct xdprxss_core *core)
+
+static void xdprxss_core_init(struct xdprxss_state *xdprxss)
 {
+	unsigned long axi_clk;
 
-	/* Set voltage swing */	
-	xdprxss_write(core,XDP_RX_MIN_VOLTAGE_SWING,
-				XDP_RX_MIN_VOLTAGE_SWING_MASK);
-	/* Set the AUX training interval */
-	xdprxss_dpcd_write(core,XDP_RX_AUX_CLK_DIVIDER_REG,
-			(xdprxss_read(core, XDP_RX_AUX_CLK_DIVIDER_REG) | 
-			(XDP_RX_AUX_DEFER_COUNT << XDP_RX_AUX_DEFER_SHIFT)));
+	u32 max_lanecount = xdprxss->max_lanecount;
 
-	/*Set Aux read interval as per the dp 1.4a */
-	xdprxss_dpcd_write(core,XDP_RX_TP_SET_REG,
-			((XDP_DPCD_TRAIN_AUX_RD_INT_16MS << 
-			XDP_RX_SET_TRNG_AUX_RD_INTERVAL_SHIFT)| 
-			XDP_RX_TRNG_SET_AUX_RD_INTERVAL_SET));
-
-	/* Set the interrupt mask */
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_ALL_MASK);
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_1_REG,
-				XDP_RX_INTERRUPT_ALL_MASK_1);	
-	/*Enable the Rx*/
-	xdprxss_enablelnk(core,Enable);
-
-	/*Enable DTG*/
-	xdprxss_set(core,XDP_RX_DTG_REG,Enable);
-
-	/*Disable the Rx*/
-	xdprxss_enablelnk(core,Disable);
-	/* loading default EDID information */
-	xdprxss_load_edid(core,(u8 *)&xilinx_edid[0]);	
-
-	/* Disable All the Interrupts */
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_ALL_MASK);
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_1_REG,
-				XDP_RX_INTERRUPT_ALL_MASK_1); 
-	/* Enable Training related Interrupts */
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_ALL_MASK);
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_1_REG,
-				XDP_RX_INTERRUPT_ALL_MASK_1);
-	xdprxss_write(core,XDP_RX_AUX_CLK_DIVIDER_REG,
-		(( xdprxss_read(core, XDP_RX_AUX_CLK_DIVIDER_REG) & 0xF0FF00FF) |
-		(XDP_RX_AUX_DEFER_COUNT << XDP_RX_AUX_DEFER_SHIFT)));
-	/* Set long value for Balnking start symbol idle time */
-	xdprxss_write(core,XDP_RX_BS_IDLE_TIME,
-				DP_BS_IDLE_TIMEOUT);
-	/*Enable CRC support in DPRX */
-	xdprxss_clr(core,XDP_RX_CRC_CONFIG_REG,XDP_RX_CRC_EN_MASK);
-
-	/*Enable the Rx*/
-	xdprxss_enablelnk(core,Enable);
-
+	xdprxss_dpcd_update_start(xdprxss);
+	xdprxss_dpcd_update(xdprxss,
+			    XDPRX_VRD_BWSET_REG, xdprxss->max_linkrate);
+	max_lanecount |= (XDPRX_EFRAME_CAP_MASK | XDPRX_LNCNT_TPS3_MASK);
+	xdprxss_dpcd_update(xdprxss, XDPRX_LANE_CNT_REG, max_lanecount);
+	xdprxss_dpcd_update_end(xdprxss);
+	xdprxss_write(xdprxss, XDPRX_LINK_ENABLE_REG, 0x0);
+	axi_clk = clk_get_rate(xdprxss->axi_clk);
+	xdprxss_write(xdprxss, XDPRX_AUX_CLKDIV_REG, axi_clk / MHZ);
+	/* Put both GT RX/TX and CPLL into reset */
+	xdprxss_write(xdprxss, XDPRX_PHY_REG, XDPRX_PHY_GTPLLRST_MASK |
+		      XDPRX_PHY_GTRXRST_MASK);
+	/* Release CPLL reset */
+	xdprxss_write(xdprxss, XDPRX_PHY_REG, XDPRX_PHY_GTRXRST_MASK);
+	/*
+	 * Remove the reset from the PHY and configure to issue reset after
+	 * every training iteration, link rate change, and start of training
+	 * pattern
+	 */
+	xdprxss_write(xdprxss, XDPRX_PHY_REG,
+		      XDPRX_PHYRST_ENBL_MASK |
+		      XDPRX_PHYRST_TRITER_MASK |
+		      XDPRX_PHYRST_RATECHANGE_MASK |
+		      XDPRX_PHYRST_TP1START_MASK);
+	xdprxss_write(xdprxss, XDPRX_MST_CAP_REG, 0x0);
+	xdprxss_write(xdprxss, XDPRX_SINK_COUNT_REG, 1);
+	xdprxss_set_training_params(xdprxss);
 }
-  /**
-   * This function initializes the DP subsystems 
-   */
-static void  xdprxss_core_init(struct xdprxss_core *core)
+
+static void xdprxss_irq_unplug(struct xdprxss_state *state)
 {
-	u32 axi_clk;
-	axi_clk = clk_get_rate(core->axi_clk);
-	
-	/*Set the max link rate and lane count for the first time*/
-	xdprxss_set_linkrate(core,DPRXSS_LINK_RATE);
-	xdprxss_set_lane_count(core,DPRXSS_LANE_COUNT_SET_REG);
+	dev_dbg(state->dev, "Asserted cable unplug interrupt\n");
 
-	xdprxss_enablelnk(core,Disable);
-	xdprxss_write(core,XDP_RX_AUX_CLK_DIVIDER_REG,(axi_clk/MHZ));
-	xdprxss_write(core, XDP_RX_PHY_REG,XDP_RX_PHY_REG_GTPLL_RESET_MASK |
-					XDP_RX_PHY_REG_GTRX_RESET_MASK);
-	xdprxss_write(core,XDP_RX_PHY_REG,XDP_RX_PHY_REG_GTRX_RESET_MASK);
-	xdprxss_write(core,XDP_RX_CDR_CONTROL_CONFIG,
-			XDP_RX_CDR_CONTROL_TDLOCK_DP159);
+	xdprxss_set(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_VIDRST_MASK);
+	xdprxss_clr(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_VIDRST_MASK);
 
-	xdprxss_write(core,XDP_RX_PHY_REG,
-				XDP_RX_PHY_REG_RESET_ENBL_MASK | 
-				XDP_RX_PHY_REG_RESET_AT_TRAIN_ITER_MASK |
-				XDP_RX_PHY_REG_RESET_AT_LINK_RATE_CHANGE_MASK | 
-				XDP_RX_PHY_REG_RESET_AT_TP1_START_MASK);
-
-	xdprxss_write(core,XDP_RX_MST_CAP_REG,Disable);	
-	xdprxss_write(core,XDP_RX_LOCAL_EDID_VIDEO_REG,Enable);
-	/* In SST mode sync count is 1 */
-	xdprxss_write(core,XDP_RX_SINK_COUNT_REG,1);
-	/*disable the the CRD tDCLOCK */
-	xdprxss_clr(core,XDP_RX_CDR_CONTROL_CONFIG,
-				XDP_RX_CDR_CONTROL_DISABLE_TIMEOUT);
-	
-	/*set display port rx traning paramerters */
-	set_dplink_trining_params(core); 
+	xdprxss_set(state, XDPRX_INTR_MASK_REG, XDPRX_INTR_ALL_MASK);
+	xdprxss_clr(state, XDPRX_INTR_MASK_REG, XDPRX_INTR_TRNG_MASK);
+	/*
+	 * In a scenario, where the cable is plugged-in but the training
+	 * is lost, the software is expected to assert a HPD upon the
+	 * occurrence of a TRAINING_LOST interrupt, so that the Source
+	 * can retrain the link.
+	 */
+	xdprxss_write(state, XDPRX_HPD_INTR_REG,
+		      FIELD_PREP(XDPRX_HPD_PULSE_MASK, XDPRX_HPD_PLUSE_5000) |
+		      XDPRX_HPD_INTR_MASK);
 }
 
-static void xdprxss_irq_unplug(struct xdprxss_state *state){
-
-	struct xdprxss_core *core = &state->core;
-
-	dev_dbg(core->dev,"Asserted cable unplug interrupt \n");
-	printk("Asserted cable unplug interrupt \n");
-	
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-			XDP_RX_INTERRUPT_UNPLUG_MASK);
-	/*Generate HPD interrupt*/	
-	xdprxss_generate_hpd(core,XDP_RX_HPD_PLUSE_DURATION_750);
-	/*Reset the video logic . Need for some type c connectors*/
-	xdprxss_soft_reset(core,XDP_RX_SOFT_RESET_REG,
-			XDP_RX_VIDEO_SOFT_RESET_MASK);
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_ALL_MASK);
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_1_REG,
-			XDP_RX_INTERRUPT_ALL_MASK_1);
-	/*Enable training related interrupts*/ 
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-			XDP_RX_TRAINING_INTERRUPT_MASK);
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_1_REG,
-			XDP_RX_TRAINING_INTERRUPT_MASK_1);
-	/*Generate a HPD of 5ms */
-	xdprxss_generate_hpd(core,XDP_RX_HPD_PLUSE_DURATION_5000);
-
-}
-static void xdprxss_irq_tp1(struct xdprxss_state *state){
-
-	struct xdprxss_core *core = &state->core;
+static void xdprxss_irq_tp1(struct xdprxss_state *state)
+{
+	union phy_configure_opts phy_opts = { 0 };
+	struct phy_configure_opts_dp *phy_cfg = &phy_opts.dp;
 	u32 linkrate;
+	unsigned int i;
 
-	dev_dbg(core->dev,"Asserted traning pattern 1  \n");
-	
-	linkrate = xdprxss_read(core,XDP_LINK_BW_SET_REG);
-	DpRxSs_LinkBandwidthHandler(linkrate);
+	dev_dbg(state->dev, "Asserted traning pattern 1\n");
+
+	linkrate = xdprxss_read(state, XDPRX_LINK_BW_REG);
+
+	switch (linkrate) {
+	case DP_LINK_BW_1_62:
+	case DP_LINK_BW_2_7:
+	case DP_LINK_BW_5_4:
+	case DP_LINK_BW_8_1:
+		phy_cfg->link_rate = linkrate * 270;
+		break;
+	default:
+		dev_err(state->dev, "invalid link rate\n");
+		break;
+	}
+	phy_cfg->set_rate = 1;
+	for (i = 0; i < state->max_lanecount; i++)
+		phy_configure(state->phy[i], &phy_opts);
+
 	/* Initialize phy logic of DP-RX core */
-	xdprxss_write(core,XDP_RX_PHY_REG,
-	                        XDP_RX_PHY_REG_INIT_MASK);
-	DpRxSs_PllResetHandler();
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_ALL_MASK);
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-					XDP_RX_INTERRUPT_UNPLUG_MASK);
+	xdprxss_write(state, XDPRX_PHY_REG, XDPRX_PHY_INIT_MASK);
+	phy_reset(state->phy[0]);
+	xdprxss_clr(state, XDPRX_INTR_MASK_REG, XDPRX_INTR_ALL_MASK);
 }
 
-static void xdprxss_irq_training_lost(struct xdprxss_state *state){
+static void xdprxss_training_failure(struct xdprxss_state *state)
+{
+	dev_dbg(state->dev, "Traning Lost !!\n");
+	state->valid_stream = false;
 
-	struct xdprxss_core *core = &state->core;
+	xdprxss_write(state, XDPRX_HPD_INTR_REG,
+		      FIELD_PREP(XDPRX_HPD_PULSE_MASK, XDPRX_HPD_PLUSE_750) |
+		      XDPRX_HPD_INTR_MASK);
 
-	dev_dbg(core->dev,"Traning Lost !!  \n");
-	state->Valid_Stream = false;
-	
-	xdprxss_generate_hpd(core,XDP_RX_HPD_PLUSE_DURATION_750);
-	xdprxss_soft_reset(core,XDP_RX_SOFT_RESET_REG,
-				XDP_RX_AUX_SOFT_RESET_MASK);
-
-  }
-
-static void xdprxss_irq_no_video(struct xdprxss_state *state){
-
-	struct xdprxss_core *core = &state->core;	
-	
-	dev_dbg(core->dev,"No Valid video received !! \n");
-	state->Valid_Stream = false;
-	
-	xdprxss_write(core,XDP_RX_VIDEO_UNSUPPORTED_REG, Enable);
-	xdprxss_enableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_VBLANK_MASK);
-	xdprxss_disableintr(core,XDP_RX_INTERRUPT_MASK_REG,
-				XDP_RX_INTERRUPT_NO_VIDEO_MASK);
-	xdprxss_dtg_reset(core);
-	xdprxss_soft_reset(core,XDP_RX_SOFT_RESET_REG,
-				XDP_RX_VIDEO_SOFT_RESET_MASK);
-}
-static void xdprxss_irq_power_state(struct xdprxss_state *state){
-
-	struct xdprxss_core *core = &state->core;
-	dev_dbg(core->dev,"Cable power state changed  !! \n");
-	
-	if(xdprxss_power_preset(core))
-		state->cable_connected = true;
-	else 
-		state->cable_connected = false;
+	/* reset the aux logic */
+	xdprxss_set(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_AUXRST_MASK);
+	xdprxss_clr(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_AUXRST_MASK);
 }
 
-static void xdprxss_irq_valid_video(struct xdprxss_state *state){
+static void xdprxss_irq_no_video(struct xdprxss_state *state)
+{
+	dev_dbg(state->dev, "No Valid video received !!\n");
 
-	struct xdprxss_core *core = &state->core;
-	
-	dev_dbg(core->dev,"Valid Video received !!  \n");
-	
-	xdprxss_write(core,XDP_RX_VIDEO_UNSUPPORTED_REG, Disable);
-	
-	if(!xdprxss_get_stream_properties(state)){
+	xdprxss_write(state, XDPRX_VIDEO_UNSUPPORTED_REG, 0x1);
+	xdprxss_clr(state, XDPRX_INTR_MASK_REG, XDPRX_INTR_VBLANK_MASK);
+	xdprxss_set(state, XDPRX_INTR_MASK_REG, XDPRX_INTR_NOVID_MASK);
+	/* reset the dtg core */
+	xdprxss_set(state, XDPRX_DTG_REG, 0x0);
+	xdprxss_set(state, XDPRX_DTG_REG, 0x1);
+
+	/* reset the video logic */
+	xdprxss_set(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_VIDRST_MASK);
+	xdprxss_clr(state, XDPRX_SOFT_RST_REG, XDPRX_SOFT_VIDRST_MASK);
+
+	/* notify source change event */
+	memset(&state->event, 0, sizeof(state->event));
+	state->event.type = V4L2_EVENT_SOURCE_CHANGE;
+	state->event.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION;
+	v4l2_subdev_notify_event(&state->subdev, &state->event);
+	state->valid_stream = false;
+}
+
+static void xdprxss_irq_valid_video(struct xdprxss_state *state)
+{
+	dev_dbg(state->dev, "Valid Video received !!\n");
+	xdprxss_write(state, XDPRX_VIDEO_UNSUPPORTED_REG, 0x0);
+
+	if (!xdprxss_get_stream_properties(state)) {
 		memset(&state->event, 0, sizeof(state->event));
 		state->event.type = V4L2_EVENT_SOURCE_CHANGE;
 		state->event.u.src_change.changes =
 				V4L2_EVENT_SRC_CH_RESOLUTION;
-		v4l2_subdev_notify_event(&state->subdev,&state->event);
-		state->Valid_Stream = true;
-
+		v4l2_subdev_notify_event(&state->subdev, &state->event);
+		state->valid_stream = true;
 	} else {
-
-		dev_err(core->dev, "Unable to get stream properties!\n");
-		state->Valid_Stream = false;
+		dev_err(state->dev, "Unable to get stream properties!\n");
+		state->valid_stream = false;
 	}
-}	
+}
 
-/**
- * xdprxss_irq_handler - Interrupt handler for DP Rx
- * @irq: IRQ number
- * @dev_id: Pointer to device state
- *
- * The DP Rx interrupts are cleared by first setting and then clearing the bits
- * in the interrupt clear register. The interrupt status register is read only.  *
- * Return: IRQ_HANDLED after handling interrupts
- */
 static irqreturn_t xdprxss_irq_handler(int irq, void *dev_id)
 {
 	struct xdprxss_state *state = (struct xdprxss_state *)dev_id;
-	struct xdprxss_core *core = &state->core;
-	u32 status, status_1;
+	u32 status;
 
-	status = xdprxss_read(core, XDP_RX_INTERRUPT_CAUSE_REG);
-	status &= (~ xdprxss_read(core,XDP_RX_INTERRUPT_MASK_REG));
-
-	status_1 = xdprxss_read(core, XDP_RX_INTERRUPT_CAUSE_1_REG);
-	status_1 &=(~xdprxss_read(core,XDP_RX_INTERRUPT_MASK_1_REG));
+	status = xdprxss_read(state, XDPRX_INTR_CAUSE_REG);
+	status &= ~xdprxss_read(state, XDPRX_INTR_MASK_REG);
 
 	if (!status)
 		return IRQ_NONE;
 
-	if (status & XDP_RX_INTERRUPT_UNPLUG_MASK) 
+	if (status & XDPRX_INTR_UNPLUG_MASK)
 		xdprxss_irq_unplug(state);
-
-	else if (status & XDP_RX_INTERRUPT_TP1_MASK)
+	if (status & XDPRX_INTR_TP1_MASK)
 		xdprxss_irq_tp1(state);
-
-	else if (status & XDP_RX_INTERRUPT_TRAINING_LOST_MASK) 
-		xdprxss_irq_training_lost(state);
-
-	else if (status & XDP_RX_INTERRUPT_TRAINING_DONE_MASK)
-    		dev_dbg(core->dev,"DP Link training is done !!  \n");
-
-	else if (status & XDP_RX_INTERRUPT_NO_VIDEO_MASK)
+	if (status & XDPRX_INTR_TRLOST_MASK)
+		xdprxss_training_failure(state);
+	if (status & XDPRX_INTR_NOVID_MASK)
 		xdprxss_irq_no_video(state);
-
-	else if (status & XDP_RX_INTERRUPT_VIDEO_MASK) 
+	if (status & XDPRX_INTR_VID_MASK)
 		xdprxss_irq_valid_video(state);
-
-	else if (status & XDP_RX_INTERRUPT_POWER_STATE_MASK)
-		xdprxss_irq_power_state(state);
+#ifdef DEBUG
+	if (status & XDPRX_INTR_TRDONE_MASK)
+		dev_dbg(state->dev, "DP Link training is done !!\n");
+#endif
 
 	return IRQ_HANDLED;
-
 }
 
 /**
@@ -877,130 +751,110 @@ static int xdprxss_subscribe_event(struct v4l2_subdev *sd,
 				   struct v4l2_fh *fh,
 				   struct v4l2_event_subscription *sub)
 {
-	int rc;
-  	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-  	struct xdprxss_core *core = &xdprxss->core;
+	int ret;
+	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
+
+	dev_dbg(xdprxss->dev, "Event subscribed : 0x%08x\n", sub->type);
 
 	switch (sub->type) {
 	case V4L2_EVENT_SOURCE_CHANGE:
-		{
-		rc = v4l2_src_change_event_subscribe(fh, sub);
-		dev_dbg(core->dev,
-		"xdprxss_subscribe_event(V4L2_EVENT_SOURCE_CHANGE) = %d\n", rc);
-			return rc;
-		}
+		ret = v4l2_src_change_event_subscribe(fh, sub);
+		break;
 	default:
-		{
-		dev_dbg(core->dev, "xdprxss_subscribe_event() default: -EINVAL\n");
-			return -EINVAL;
-		}	
+		ret = -EINVAL;
 	}
-}
-/**
- * xdprxss_unsubscribe_event - Unsubscribe from all events registered
- * @sd: V4L2 Sub device
- * @fh: V4L2 file handle
- * @sub: pointer to Event unsubscription structure
- *
- * Return: zero on success, else a negative error code.
- */
-static int xdprxss_unsubscribe_event(struct v4l2_subdev *sd,
-				     struct v4l2_fh *fh,
-    				     struct v4l2_event_subscription *sub)
-{
-	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-	struct xdprxss_core *core = &xdprxss->core;
 
-	dev_dbg(core->dev, "Event unsubscribe : 0x%08x\n", sub->type);
-	return v4l2_event_unsubscribe(fh, sub);
+	return ret;
 }
 
-/**
- * xdprxss_s_stream - It is used to start/stop the streaming.
- * @sd: V4L2 Sub device
- * @enable: Flag (True / False)
- *
- * This function controls the start or stop of streaming for the
- * Xilinx DP Rx Subsystem.
- *
- * Return: 0 on success, errors otherwise
- */
 static int xdprxss_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-	struct xdprxss_core *core = &xdprxss->core;
+
 	/* DP does not need to be enabled when we start streaming */
-	if (enable) {
-    		if(!xdprxss->Valid_Stream){
-			dev_dbg(core->dev, "No Valid Stream Received \n");
-			return -EINVAL;
-		}
-		if (xdprxss->streaming) { 
-			dev_dbg(core->dev, "Already streaming\n");
-			return -EINVAL;
-		}
+	if (enable == xdprxss->streaming)
+		return 0;
 
-	xdprxss->streaming = true;
-	dev_dbg(core->dev, "Streaming started\n");
-	
-	} else {
-		if (!xdprxss->streaming) {
-			dev_dbg(core->dev, "Stopped streaming already\n");
-			return -EINVAL;
-    		}
-	xdprxss->streaming = false;
-	dev_dbg(core->dev, "Streaming stopped\n");
-  	}
+	if (enable && !xdprxss->valid_stream)
+		return -EINVAL;
 
-  	return 0;
-}
-
-static struct v4l2_mbus_framefmt *
-__xdprxss_get_pad_format(struct xdprxss_state *xdprxss,
-			 struct v4l2_subdev_pad_config *cfg,
-			unsigned int pad, u32 which)
-{
-	struct xdprxss_core *core = &xdprxss->core;
-	switch (which) {
-	case V4L2_SUBDEV_FORMAT_TRY:
-		dev_dbg(core->dev, 
-			"%s: V4L2_SUBDEV_FORMAT_TRY\n",__func__);
-      		return v4l2_subdev_get_try_format(&xdprxss->subdev, cfg, pad);
-	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		dev_dbg(core->dev,
-			"%s: V4L2_SUBDEV_FORMAT_ACTIVE\n",__func__);
-		return &xdprxss->formats[pad];
-	default:
-      		return NULL;
-	}
-}
-
-/**
- * xdprxss_get_format - Get the pad format
- * @sd: Pointer to V4L2 Sub device structure
- * @cfg: Pointer to sub device pad information structure
- * @fmt: Pointer to pad level media bus format
- *
- * This function is used to get the pad format information.
- *
- * Return: 0 on success
- */
-static int xdprxss_get_format(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
-				struct v4l2_subdev_format *fmt)
-{
-	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-
-	fmt->format = *__xdprxss_get_pad_format(xdprxss, cfg,
-						fmt->pad, fmt->which);
-	dev_dbg(xdprxss->core.dev, "Stream width = %d height = %d Field = %d\n",
-      			fmt->format.width, fmt->format.height, fmt->format.field);
+	xdprxss->streaming = enable;
 
 	return 0;
 }
 
 /**
- * xdprxss_set_format - This is used to set the pad format
+ * xdprxss_g_input_status - It is used to determine if the video signal
+ * is present / locked onto or not.
+ *
+ * @sd: V4L2 Sub device
+ * @status: status of signal locked
+ *
+ * This is used to determine if the valid video signal is present and
+ * locked onto by the DP Rx xdprxss or not .
+ *
+ * Return: zero on success
+ */
+static int xdprxss_g_input_status(struct v4l2_subdev *sd, u32 *status)
+{
+	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
+
+	if (!xdprxss->valid_stream)
+		*status = V4L2_IN_ST_NO_SYNC | V4L2_IN_ST_NO_SIGNAL;
+	else
+		*status = 0;
+
+	return 0;
+}
+
+static struct v4l2_mbus_framefmt *
+__xdprxss_get_pad_format(struct xdprxss_state *xdprxss,
+			 struct v4l2_subdev_pad_config *cfg,
+			 unsigned int pad, u32 which)
+{
+	struct v4l2_mbus_framefmt *format;
+
+	switch (which) {
+	case V4L2_SUBDEV_FORMAT_TRY:
+		format = v4l2_subdev_get_try_format(&xdprxss->subdev, cfg, pad);
+		break;
+	case V4L2_SUBDEV_FORMAT_ACTIVE:
+		format = &xdprxss->format;
+		break;
+	default:
+		format = NULL;
+		break;
+	}
+
+	return format;
+}
+
+/**
+ * xdprxss_init_cfg - Initialise the pad format config to default
+ * @sd: Pointer to V4L2 Sub device structure
+ * @cfg: Pointer to sub device pad information structure
+ *
+ * This function is used to initialize the pad format with the default
+ * values.
+ *
+ * Return: 0 on success
+ */
+static int xdprxss_init_cfg(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_pad_config *cfg)
+{
+	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
+	struct v4l2_mbus_framefmt *format;
+
+	format = v4l2_subdev_get_try_format(sd, cfg, 0);
+
+	if (!xdprxss->valid_stream)
+		*format = xdprxss->format;
+
+	return 0;
+}
+
+/**
+ * xdprxss_getset_format - This is used to set and get the pad format
  * @sd: Pointer to V4L2 Sub device structure
  * @cfg: Pointer to sub device pad information structure
  * @fmt: Pointer to pad level media bus format
@@ -1011,323 +865,248 @@ static int xdprxss_get_format(struct v4l2_subdev *sd,
  *
  * Return: 0 on success
  */
-
-/* we must modify the requested format to match what the hardware can provide */
-static int xdprxss_set_format(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
-				struct v4l2_subdev_format *fmt)
+static int xdprxss_getset_format(struct v4l2_subdev *sd,
+				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_format *fmt)
 {
-	struct v4l2_mbus_framefmt *__format;
 	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-
-	dev_dbg(xdprxss->core.dev,
-      		"set width %d height %d code %d field %d colorspace %d\n",
-	fmt->format.width, fmt->format.height,
-	fmt->format.code, fmt->format.field,
-	fmt->format.colorspace);
-
-	mutex_lock(&xdprxss->core.lock);
-	__format = __xdprxss_get_pad_format(xdprxss, cfg,
-						fmt->pad, fmt->which);
-  	fmt->format = *__format;
-	mutex_unlock(&xdprxss->core.lock);
-  	return 0;
-}
-
-
-/**
- * xdprxss_open - Called on v4l2_open()
- * @sd: Pointer to V4L2 sub device structure
- * @fh: Pointer to V4L2 File handle
- *
- * This function is called on v4l2_open(). It sets the default format for pad.
- *
- * Return: 0 on success
- */
-static int xdprxss_open(struct v4l2_subdev *sd,
-			struct v4l2_subdev_fh *fh)
-{
 	struct v4l2_mbus_framefmt *format;
-	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
 
-	format = v4l2_subdev_get_try_format(sd, fh->pad, 0);
-	*format = xdprxss->default_format;
-  	return 0;
-}
+	if (!xdprxss->valid_stream) {
+		dev_err(xdprxss->dev, "Video not locked!\n");
+		return -EINVAL;
+	}
 
-/**
- * xdprxss_close - Called on v4l2_close()
- * @sd: Pointer to V4L2 sub device structure
- * @fh: Pointer to V4L2 File handle
- *
- * This function is called on v4l2_close().
- *
- * Return: 0 on success
- */
-static int xdprxss_close(struct v4l2_subdev *sd,
-			 struct v4l2_subdev_fh *fh)
-{
+	dev_dbg(xdprxss->dev,
+		"set width %d height %d code %d field %d colorspace %d\n",
+		fmt->format.width, fmt->format.height,
+		fmt->format.code, fmt->format.field,
+		fmt->format.colorspace);
+	format = __xdprxss_get_pad_format(xdprxss, cfg,
+					  fmt->pad, fmt->which);
+	if (!format)
+		return -EINVAL;
 
-	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-	dev_dbg(xdprxss->core.dev,"xdprxss_close\n");
+	fmt->format = *format;
 
 	return 0;
 }
-static int xdprxss_enum_dv_timings(struct v4l2_subdev *sd,
-				    struct v4l2_enum_dv_timings *timings)
+
+/**
+ * xdprxss_enum_mbus_code - Handle pixel format enumeration
+ * @sd: pointer to v4l2 subdev structure
+ * @cfg: V4L2 subdev pad configuration
+ * @code: pointer to v4l2_subdev_mbus_code_enum structure
+ *
+ * Return: -EINVAL or zero on success
+ */
+static int xdprxss_enum_mbus_code(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_mbus_code_enum *code)
 {
+	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
+	u32 index = code->index;
+	u32 base = 0;
+
+	if (xdprxss->bpc == 8)
+		base = 0;
+
+	if (xdprxss->bpc == 10)
+		base = 3;
+
+	if (code->pad || index >= 3)
+		return -EINVAL;
+
+	code->code = xdprxss_supported_mbus_fmts[base + index];
+
+	return 0;
+}
+
+/**
+ * xdprxss_enum_dv_timings - Enumerate all the supported DV timings
+ * @sd: pointer to v4l2 subdev structure
+ * @timings: DV timings structure to be returned.
+ *
+ * Return: -EINVAL incase of invalid index and pad or zero on success
+ */
+static int xdprxss_enum_dv_timings(struct v4l2_subdev *sd,
+				   struct v4l2_enum_dv_timings *timings)
+{
+	if (timings->index >= ARRAY_SIZE(fmt_cap))
+		return -EINVAL;
+
 	if (timings->pad != 0)
 		return -EINVAL;
 
-	return v4l2_enum_dv_timings_cap(timings,
-			&xdprxss_dv_timings_cap, NULL, NULL);
+	timings->timings = fmt_cap[timings->index];
+
+	return 0;
 }
+
 /**
- * xdprxss_get_dv_timings_cap - This is used to set the dv timing capabilities 
+ * xdprxss_get_dv_timings_cap - This is used to set the dv timing
+ * capabilities
  * @subdev: Pointer to V4L2 Sub device structure
  * @cap: Pointer to dv timing capability structure
  *
- * Return: 0 on success
+ * Return: -EINVAL incase of invalid pad or zero on success
  */
 static int xdprxss_get_dv_timings_cap(struct v4l2_subdev *subdev,
-				struct v4l2_dv_timings_cap *cap)
+				      struct v4l2_dv_timings_cap *cap)
 {
-	struct xdprxss_state *xdprxss = to_xdprxssstate(subdev);
-	
+	struct v4l2_dv_timings_cap xdprxss_dv_timings_cap = {
+		.type = V4L2_DV_BT_656_1120,
+		.reserved = { 0 },
+		V4L2_INIT_BT_TIMINGS
+		(800, 7680,
+		600, 4320,
+		25000000, 297000000,
+		V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
+		V4L2_DV_BT_STD_GTF | V4L2_DV_BT_STD_CVT,
+		V4L2_DV_BT_CAP_INTERLACED | V4L2_DV_BT_CAP_PROGRESSIVE |
+		V4L2_DV_BT_CAP_REDUCED_BLANKING |
+		V4L2_DV_BT_CAP_CUSTOM
+		)
+	};
+
 	if (cap->pad != 0)
 		return -EINVAL;
-	mutex_lock(&xdprxss->lock);
+
 	*cap = xdprxss_dv_timings_cap;
-	mutex_unlock(&xdprxss->lock);
+
 	return 0;
 }
 
 static int xdprxss_query_dv_timings(struct v4l2_subdev *sd,
-					struct v4l2_dv_timings *timings)
+				    struct v4l2_dv_timings *timings)
 {
-	struct xdprxss_state *xdprxss = to_xdprxssstate(sd);
-	
+	struct xdprxss_state *state = to_xdprxssstate(sd);
+	unsigned int i;
+
 	if (!timings)
 		return -EINVAL;
-	mutex_lock(&xdprxss->lock);
-	if (!xdprxss->Valid_Stream) {
-		pr_info("Stream is not up \n");
-		mutex_unlock(&xdprxss->lock);
-    		return -ENOLINK;
+
+	if (!state->valid_stream)
+		return -ENOLCK;
+	for (i = 0; i < ARRAY_SIZE(xdprxss_dv_timings); i++) {
+		if (state->format.width == xdprxss_dv_timings[i].width &&
+		    state->format.height == xdprxss_dv_timings[i].height &&
+		    state->frame_interval == xdprxss_dv_timings[i].fps) {
+			*timings = xdprxss_dv_timings[i].timing;
+			return 0;
+		}
 	}
-	
-	xdprxss_get_detected_timings(xdprxss);
-	
-	/* copy detected timings into destination */
-	*timings = xdprxss->detected_timings;
-	mutex_unlock(&xdprxss->lock);
-	return 0;
+
+	return -ERANGE;
 }
 
-static int xdprxss_get_edid(struct v4l2_subdev *subdev, struct v4l2_edid *edid) {
-
-	struct xdprxss_state *xdprxss = to_xdprxssstate(subdev);
-	int do_copy = 1;
-	if (edid->pad > 0)
-		return -EINVAL;
-	if (edid->start_block != 0)
-		return -EINVAL;
-	/* caller is only interested in the size of the EDID? */
-	if ((edid->start_block == 0) && (edid->blocks == 0)) do_copy = 0;
-        mutex_lock(&xdprxss->lock);
-        /* user EDID active? */
-	if (xdprxss->edid_user_blocks) {
-		if (do_copy)
-			memcpy(edid->edid, xdprxss->edid_user, 128 * xdprxss->edid_user_blocks);
-		edid->blocks = xdprxss->edid_user_blocks;
-	} else {
-		if (do_copy)
-			memcpy(edid->edid, &xilinx_edid[0], sizeof(xilinx_edid));
-		edid->blocks = sizeof(xilinx_edid) / 128;
-	}
-	mutex_unlock(&xdprxss->lock);
-        return 0;
-}
-static void xdprxss_sethpd(struct xdprxss_core *core,int setclr){
-
-	xdprxss_write(core,XDP_RX_LINK_ENABLE_REG,setclr);
-
-}
-static void xdprxss_delayed_work_enable_hotplug(struct work_struct *work)
-{
-        struct delayed_work *dwork = to_delayed_work(work);
-        struct xdprxss_state *xdprxss = container_of(dwork, struct xdprxss_state,
-                                                delayed_work_enable_hotplug);
-
-	struct xdprxss_core *core = &xdprxss->core;
-	/* toggle source device with HPD singnal */
-        xdprxss_sethpd(core,1);
-}
-
-static int xdprxss_set_edid(struct v4l2_subdev *subdev, struct v4l2_edid *edid) {
-	
-	struct xdprxss_state *xdprxss = to_xdprxssstate(subdev);
-	struct xdprxss_core *core = &xdprxss->core;
-	
-	if (edid->pad > 0)
-	        return -EINVAL;
-	if (edid->start_block != 0)
-	        return -EINVAL;
-	if (edid->blocks > xdprxss->edid_blocks_max) {
-	        /* notify caller of how many EDID blocks this driver supports */
-	        edid->blocks = xdprxss->edid_blocks_max;
-	        return -E2BIG;
-	}
-	mutex_lock(&xdprxss->lock);
-	xdprxss->edid_user_blocks = edid->blocks;
-	
-	/* Disable hotplug and I2C access to EDID RAM from DDC port */
-	cancel_delayed_work_sync(&xdprxss->delayed_work_enable_hotplug);
-	/* Disables the main link */
-	xdprxss_sethpd(core,0);
-	
-	if (edid->blocks) {
-	        memcpy(xdprxss->edid_user, edid->edid, 128 * edid->blocks);
-	               xdprxss_load_edid(core, (u8 *)&xdprxss->edid_user);
-	                /* enable hotplug after 100 ms */
-	                queue_delayed_work(xdprxss->work_queue,
-	                        &xdprxss->delayed_work_enable_hotplug, HZ / 10);
-	}
-	mutex_unlock(&xdprxss->lock);
-	return 0;
-}
- 
-
-/* -----------------------------------------------------------------------------
+/* ------------------------------------------------------------
  * Media Operations
  */
 
 static const struct media_entity_operations xdprxss_media_ops = {
 	.link_validate = v4l2_subdev_link_validate
 };
- 
+
 static const struct v4l2_subdev_core_ops xdprxss_core_ops = {
-  	.subscribe_event = xdprxss_subscribe_event,
-  	.unsubscribe_event = xdprxss_unsubscribe_event
+	.subscribe_event	= xdprxss_subscribe_event,
+	.unsubscribe_event	= v4l2_event_subdev_unsubscribe,
 };
 
-static struct v4l2_subdev_video_ops xdprxss_video_ops = {
-	.query_dv_timings = xdprxss_query_dv_timings,
-  	.s_stream = xdprxss_s_stream,
+static const struct v4l2_subdev_video_ops xdprxss_video_ops = {
+	.query_dv_timings	= xdprxss_query_dv_timings,
+	.s_stream		= xdprxss_s_stream,
+	.g_input_status		= xdprxss_g_input_status,
 };
 
-static struct v4l2_subdev_pad_ops xdprxss_pad_ops = {
-	.get_fmt 		= xdprxss_get_format,
-	.set_fmt		= xdprxss_set_format,
-	.get_edid		= xdprxss_get_edid,
-	.set_edid		= xdprxss_set_edid,
-	.enum_dv_timings 	= xdprxss_enum_dv_timings,
-  	.dv_timings_cap         = xdprxss_get_dv_timings_cap,
+static const struct v4l2_subdev_pad_ops xdprxss_pad_ops = {
+	.init_cfg		= xdprxss_init_cfg,
+	.enum_mbus_code		= xdprxss_enum_mbus_code,
+	.get_fmt		= xdprxss_getset_format,
+	.set_fmt		= xdprxss_getset_format,
+	.enum_dv_timings	= xdprxss_enum_dv_timings,
+	.dv_timings_cap         = xdprxss_get_dv_timings_cap,
 };
 
-static struct v4l2_subdev_ops xdprxss_ops = {
-  	.core = &xdprxss_core_ops,
-  	.video = &xdprxss_video_ops,
-  	.pad = &xdprxss_pad_ops
+static const struct v4l2_subdev_ops xdprxss_ops = {
+	.core	= &xdprxss_core_ops,
+	.video	= &xdprxss_video_ops,
+	.pad	= &xdprxss_pad_ops
 };
 
-static const struct v4l2_subdev_internal_ops xdprxss_internal_ops = {
-  	.open = xdprxss_open,
-	.close = xdprxss_close
-};
-
-/* -----------------------------------------------------------------------------
+/* ----------------------------------------------------------------
  * Platform Device Driver
  */
-
-/*This function parse the EDID block DT node */
-void __iomem *xdprxss_parse_vid_edid_dt(struct device *dev)
-{
-	struct device_node *vid_edid_node;
-	struct resource res;
-	void __iomem *vid_edid_base;
-	int rc;
-	struct device_node *node = dev->of_node;
-
-	vid_edid_node = of_parse_phandle(node, "xlnx,xlnx-vid-edid", 0);
-	if (!vid_edid_node) {
-		dev_err(dev, "vid_edid_node not found\n");
-		vid_edid_base= NULL;
-	} else {
-		rc = of_address_to_resource(vid_edid_node, 0, &res);
-		if (rc) {
-			dev_err(dev, "vid_edid_node:addr to resource failed\n");
-			vid_edid_base = NULL;
-		} else {
-			vid_edid_base = devm_ioremap_resource(dev, &res);
-			if (IS_ERR(vid_edid_base)) {
-				dev_err(dev, "vid_edid_base ioremap failed\n");
-				vid_edid_base = NULL;
-			} 
-		}
-	of_node_put(vid_edid_node);
-	}
-	return vid_edid_base;
-}
-/*This function parese the device -tree data */
 static int xdprxss_parse_of(struct xdprxss_state *xdprxss)
 {
-	struct device_node *node = xdprxss->core.dev->of_node;
-	struct device_node *ports = NULL;
-	struct device_node *port = NULL;
-	unsigned int nports = 0;
-	struct xdprxss_core *core = &xdprxss->core;
-	struct device *dev = xdprxss->core.dev;
-	const struct xvip_video_format *format;
-	struct device_node *endpoint;
+	struct device_node *node = xdprxss->dev->of_node;
+	u32 val = 0;
 	int ret;
-	
-	ports = of_get_child_by_name(node, "ports");
-	if (!ports)
-		ports = node;
-	for_each_child_of_node(ports, port) {
-		if (!port->name || of_node_cmp(port->name, "port"))
-			continue;
-		format = xvip_of_get_format(port);
-		if (IS_ERR(format)) {
-			dev_err(core->dev, "invalid format in DT");
-			return PTR_ERR(format);
-		}
-		dev_dbg(core->dev, "vf_code = %d bpc = %d bpp = %d\n",
-		format->vf_code, format->width, format->bpp);
 
-		if (format->vf_code != XVIP_VF_YUV_422 &&
-			format->vf_code != XVIP_VF_YUV_420 && format->vf_code != XVIP_VF_RBG) {
-			dev_err(core->dev, "Incorrect UG934 video format set.\n");
-			return -EINVAL;
+	ret = of_property_read_u32(node, "xlnx,bpc", &xdprxss->bpc);
+	if (ret < 0) {
+		if (ret != -EINVAL) {
+			dev_err(xdprxss->dev, "failed to get xlnx,bpp\n");
+			return ret;
 		}
-		xdprxss->vip_format = format;
-		endpoint = of_get_next_child(port, NULL);
-		if (!endpoint) {
-			dev_err(core->dev, "No port at\n");
-			return -EINVAL;
-}
-
-		/* Count the number of ports. */
-		nports++;
 	}
-
-	if (nports != 1) {
-		dev_err(core->dev, "invalid number of ports %u\n", nports);
+	/*
+	 * TODO : For now driver supports only 8, 10 bpc.
+	 * In future, driver may add with other bpc support
+	 */
+	if (xdprxss->bpc != 8 && xdprxss->bpc != 10) {
+		dev_err(xdprxss->dev, "unsupported bpc = %u\n", xdprxss->bpc);
 		return -EINVAL;
 	}
-	core->vid_edid_base = xdprxss_parse_vid_edid_dt(dev);
-	if (!core->vid_edid_base) {
-    		dev_err(dev, " Video EDID  not found!\n");
-  	}
-	/* Register interrupt handler */
-	core->irq = irq_of_parse_and_map(node, 0);
 
-	ret = devm_request_irq(core->dev, core->irq, xdprxss_irq_handler,
-      		IRQF_SHARED, "xilinx-dprxss", xdprxss);
-	if (ret) {
-    		dev_err(core->dev, "Err = %d Interrupt handler reg failed!\n",ret);
-	return ret;
+	xdprxss->hdcp_enable = of_property_read_bool(node, "xlnx,hdcp-enable");
+	/* TODO : This driver does not support HDCP feature */
+	if (xdprxss->hdcp_enable) {
+		dev_err(xdprxss->dev, "hdcp unsupported\n");
+		return -EINVAL;
+	}
+
+	xdprxss->audio_enable = of_property_read_bool(node,
+						      "xlnx,audio-enable");
+	/* TODO : This driver does not support audio */
+	if (xdprxss->audio_enable) {
+		dev_err(xdprxss->dev, "audio unsupported\n");
+		return -EINVAL;
+	}
+
+	ret = of_property_read_u32(node, "xlnx,link-rate", &val);
+	if (ret < 0) {
+		dev_err(xdprxss->dev, "xlnx,link-rate property not found\n");
+		return ret;
+	}
+	if (!(val == DP_LINK_BW_1_62 ||
+	      val == DP_LINK_BW_2_7 ||
+	      val == DP_LINK_BW_5_4 ||
+	      val == DP_LINK_BW_8_1)) {
+		dev_err(xdprxss->dev, "invalid link rate\n");
+		return -EINVAL;
+	}
+	xdprxss->max_linkrate = val;
+
+	ret = of_property_read_u32(node, "xlnx,lane-count", &val);
+	if (ret < 0) {
+		dev_err(xdprxss->dev, "xlnx,lane-count property not found\n");
+		return ret;
+	}
+	if (val < 1 && val > 4) {
+		dev_err(xdprxss->dev, "invalid lane count\n");
+		return -EINVAL;
+	}
+	xdprxss->max_lanecount = val;
+
+	ret = of_property_read_u32(node, "xlnx,mode", &val);
+	if (ret < 0) {
+		dev_err(xdprxss->dev, "xlnx,mode property not found\n");
+		return ret;
+	}
+	if (val > 0) {
+		dev_err(xdprxss->dev, "driver does't support MST mode\n");
+		return -EINVAL;
 	}
 
 	return 0;
@@ -1336,147 +1115,166 @@ static int xdprxss_parse_of(struct xdprxss_state *xdprxss)
 static int xdprxss_probe(struct platform_device *pdev)
 {
 	struct v4l2_subdev *subdev;
-  	struct xdprxss_state *xdprxss;
-	struct xdprxss_core *core;
-  	struct resource *res;
+	struct xdprxss_state *xdprxss;
 	struct device_node *node;
-  	int ret;
+	struct device *dev = &pdev->dev;
+	struct resource *res;
+	int ret, irq;
+	unsigned int i = 0, j;
 
-	xdprxss = devm_kzalloc(&pdev->dev, sizeof(*xdprxss), GFP_KERNEL);
-  	if (!xdprxss)
-    		return -ENOMEM;
+	xdprxss = devm_kzalloc(dev, sizeof(*xdprxss), GFP_KERNEL);
+	if (!xdprxss)
+		return -ENOMEM;
 
-	xdprxss->core.dev = &pdev->dev;
-	node = xdprxss->core.dev->of_node;
-	core = &xdprxss->core;
+	xdprxss->dev = &pdev->dev;
+	node = xdprxss->dev->of_node;
 
-	core->axi_clk = devm_clk_get(&pdev->dev, "s_axi_aclk");
-	if (IS_ERR(core->axi_clk)) {
-		ret = PTR_ERR(core->axi_clk);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dp_base");
+	xdprxss->dp_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(xdprxss->dp_base)) {
+		dev_err(dev, "couldn't map DisplayPort registers\n");
+		return -ENODEV;
+	}
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "edid_base");
+	xdprxss->edid_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(xdprxss->edid_base)) {
+		dev_err(dev, "Couldn't map EDID IP memory\n");
+		return -ENOENT;
+	}
+
+	xdprxss->axi_clk = devm_clk_get(dev, "s_axi_aclk");
+	if (IS_ERR(xdprxss->axi_clk)) {
+		ret = PTR_ERR(xdprxss->axi_clk);
 		dev_err(&pdev->dev, "failed to get s_axi_clk (%d)\n", ret);
-    		return ret;
+		return ret;
 	}
 
-	core->rx_lnk_clk = devm_clk_get(&pdev->dev, "rx_lnk_clk");
-  	if (IS_ERR(core->rx_lnk_clk)) {
-    		ret = PTR_ERR(core->rx_lnk_clk);
-    		dev_err(&pdev->dev, "failed to get rx_lnk_clk (%d)\n", ret);
-    		return ret;
+	xdprxss->rx_lnk_clk = devm_clk_get(dev, "rx_lnk_clk");
+	if (IS_ERR(xdprxss->rx_lnk_clk)) {
+		ret = PTR_ERR(xdprxss->rx_lnk_clk);
+		dev_err(&pdev->dev, "failed to get rx_lnk_clk (%d)\n", ret);
+		return ret;
 	}
 
-	core->rx_vid_clk = devm_clk_get(&pdev->dev, "rx_vid_clk");
-  	if (IS_ERR(core->rx_vid_clk)) {
-    		ret = PTR_ERR(core->rx_vid_clk);
-    		dev_err(&pdev->dev, "failed to get rx_vid_clk (%d)\n", ret);
-    		return ret;
-  	}
-
-	ret = clk_prepare_enable(core->axi_clk);
-	if (ret) {
-    		dev_err(&pdev->dev, "failed to enable axi_clk (%d)\n", ret);
-    		return ret;
-  	}
-
-	ret = clk_prepare_enable(core->rx_lnk_clk);
-	if (ret) {
-    		dev_err(&pdev->dev, "failed to enable rx_lnk_clk (%d)\n", ret);
-    		goto rx_lnk_clk_err;
-  	}
-
-	ret = clk_prepare_enable(core->rx_vid_clk);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to enable rx_vid_clk (%d)\n", ret);
-		goto rx_vid_clk_err;
+	xdprxss->rx_vid_clk = devm_clk_get(dev, "rx_vid_clk");
+	if (IS_ERR(xdprxss->rx_vid_clk)) {
+		ret = PTR_ERR(xdprxss->rx_vid_clk);
+		dev_err(&pdev->dev, "failed to get rx_vid_clk (%d)\n", ret);
+		return ret;
 	}
-
-	
-	xdprxss->edid_blocks_max = 2;
-	INIT_DELAYED_WORK(&xdprxss->delayed_work_enable_hotplug,
-					xdprxss_delayed_work_enable_hotplug);
 
 	ret = xdprxss_parse_of(xdprxss);
 	if (ret < 0)
-    		goto clk_err;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xdprxss->core.iomem = devm_ioremap_resource(xdprxss->core.dev, res);
-	if (IS_ERR(xdprxss->core.iomem)) {
-		ret = PTR_ERR(xdprxss->core.iomem);
 		goto clk_err;
+
+	/* acquire vphy lanes */
+	for (i = 0; i < xdprxss->max_lanecount; i++) {
+		char phy_name[16];
+
+		snprintf(phy_name, sizeof(phy_name), "dp-phy%d", i);
+		xdprxss->phy[i] = devm_phy_get(xdprxss->dev, phy_name);
+		if (IS_ERR(xdprxss->phy[i])) {
+			ret = PTR_ERR(xdprxss->phy[i]);
+			xdprxss->phy[i] = NULL;
+			if (ret == -EPROBE_DEFER)
+				dev_info(dev, "phy not ready -EPROBE_DEFER\n");
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev,
+					"failed to get phy lane %s i %d\n",
+					phy_name, i);
+			goto error_phy;
+		}
+		ret = phy_init(xdprxss->phy[i]);
+		if (ret) {
+			dev_err(dev,
+				"failed to init phy lane %d\n", i);
+			goto error_phy;
+		}
 	}
 
-	/*Initialize the DP core*/	
-	xdprxss_core_init(core);
+	ret = clk_prepare_enable(xdprxss->axi_clk);
+	if (ret) {
+		dev_err(dev, "failed to enable axi_clk (%d)\n", ret);
+		goto error_phy;
+	}
+
+	ret = clk_prepare_enable(xdprxss->rx_lnk_clk);
+	if (ret) {
+		dev_err(dev, "failed to enable rx_lnk_clk (%d)\n", ret);
+		goto rx_lnk_clk_err;
+	}
+
+	ret = clk_prepare_enable(xdprxss->rx_vid_clk);
+	if (ret) {
+		dev_err(dev, "failed to enable rx_vid_clk (%d)\n", ret);
+		goto rx_vid_clk_err;
+	}
+
+	spin_lock_init(&xdprxss->lock);
+
+	/* Initialize the DP core */
+	xdprxss_core_init(xdprxss);
 
 	/* Initialize V4L2 subdevice and media entity */
-	xdprxss->pads[XDPRX_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
+	xdprxss->pad.flags = MEDIA_PAD_FL_SOURCE;
 
-	/* Initialize the default format */
-	xdprxss->default_format.code = xdprxss->vip_format->code;
-	xdprxss->default_format.field = V4L2_FIELD_NONE;
-	xdprxss->default_format.colorspace = V4L2_COLORSPACE_DEFAULT;
-	xdprxss->default_format.width = XDPRX_DEFAULT_WIDTH;
-	xdprxss->default_format.height = XDPRX_DEFAULT_HEIGHT;
-	xdprxss->formats[0] = xdprxss->default_format;
 	/* Initialize V4L2 subdevice and media entity */
 	subdev = &xdprxss->subdev;
 	v4l2_subdev_init(subdev, &xdprxss_ops);
 	subdev->dev = &pdev->dev;
-	subdev->internal_ops = &xdprxss_internal_ops;
-	strlcpy(subdev->name, dev_name(&pdev->dev), sizeof(subdev->name));
+	strscpy(subdev->name, dev_name(&pdev->dev), sizeof(subdev->name));
 
-	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
+	subdev->flags = V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
+
 	subdev->entity.ops = &xdprxss_media_ops;
+
 	v4l2_set_subdevdata(subdev, xdprxss);
+	ret = media_entity_pads_init(&subdev->entity, 1, &xdprxss->pad);
+	if (ret < 0)
+		goto error;
 
-	ret = media_entity_pads_init(&subdev->entity, 1, xdprxss->pads);	
-		if (ret < 0)
-    		goto error;
-
-	/* Initialise and register the controls */
-	v4l2_ctrl_handler_init(&xdprxss->ctrl_handler,0);
-
-	xdprxss->streaming = false;
-	subdev->ctrl_handler = &xdprxss->ctrl_handler;
-	ret = v4l2_ctrl_handler_setup(&xdprxss->ctrl_handler);
-	if (ret < 0) {
-    		dev_err(&pdev->dev, "failed to set controls\n");
-    		goto error;
-  	}
+	/* Register interrupt handler */
+	irq = irq_of_parse_and_map(node, 0);
+	ret = devm_request_irq(xdprxss->dev, irq, xdprxss_irq_handler,
+			       IRQF_SHARED, subdev->name, xdprxss);
+	if (ret) {
+		dev_err(dev, "Err = %d Interrupt handler reg failed!\n",
+			ret);
+		goto error;
+	}
 
 	platform_set_drvdata(pdev, xdprxss);
 
-	/* assume detected format */
-	xdprxss->detected_format.width = 1280;
-	xdprxss->detected_format.height = 720;
-  	xdprxss->detected_format.field = V4L2_FIELD_NONE;
-	xdprxss->detected_format.colorspace = V4L2_COLORSPACE_REC709;
-  	xdprxss->detected_format.code = MEDIA_BUS_FMT_RBG888_1X24;
-  	xdprxss->detected_format.colorspace = V4L2_COLORSPACE_SRGB;
-  	xdprxss->detected_format.xfer_func = V4L2_XFER_FUNC_DEFAULT;
-  	xdprxss->detected_format.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
-  	xdprxss->detected_format.quantization = V4L2_QUANTIZATION_DEFAULT;
-
-  	ret = v4l2_async_register_subdev(subdev);
-  	if (ret < 0) {
-    		dev_err(&pdev->dev, "failed to register subdev\n");
-    		goto error;
-  	}
-
-	xdprxss->Valid_Stream = false ;	
-	dev_info(xdprxss->core.dev, "Xilinx DP Rx Subsystem device found!\n");
+	ret = v4l2_async_register_subdev(subdev);
+	if (ret < 0) {
+		dev_err(dev, "failed to register subdev\n");
+		goto error;
+	}
 
 	return 0;
-error:
-	v4l2_ctrl_handler_free(&xdprxss->ctrl_handler);
-	media_entity_cleanup(&subdev->entity);
 
+error:
+	media_entity_cleanup(&subdev->entity);
 clk_err:
-	clk_disable_unprepare(core->rx_vid_clk);
+	clk_disable_unprepare(xdprxss->rx_vid_clk);
 rx_vid_clk_err:
-	clk_disable_unprepare(core->rx_lnk_clk);
+	clk_disable_unprepare(xdprxss->rx_lnk_clk);
 rx_lnk_clk_err:
-	clk_disable_unprepare(core->axi_clk);
+	clk_disable_unprepare(xdprxss->axi_clk);
+error_phy:
+	dev_dbg(dev, " %s error_phy:\n", __func__);
+	/* release the lanes that we did get, if we did not get all lanes */
+	for (j = 0; j < i; j++) {
+		if (xdprxss->phy[j]) {
+			dev_dbg(dev,
+				"phy_exit() xdprxss->phy[%d] = %p\n",
+				j, xdprxss->phy[j]);
+			phy_exit(xdprxss->phy[j]);
+			xdprxss->phy[j] = NULL;
+		}
+	}
+
 	return ret;
 }
 
@@ -1484,33 +1282,37 @@ static int xdprxss_remove(struct platform_device *pdev)
 {
 	struct xdprxss_state *xdprxss = platform_get_drvdata(pdev);
 	struct v4l2_subdev *subdev = &xdprxss->subdev;
+	unsigned int i;
+
 	v4l2_async_unregister_subdev(subdev);
-	v4l2_ctrl_handler_free(&xdprxss->ctrl_handler);
 	media_entity_cleanup(&subdev->entity);
-	clk_disable_unprepare(xdprxss->core.rx_vid_clk);
-	clk_disable_unprepare(xdprxss->core.rx_lnk_clk);
-	clk_disable_unprepare(xdprxss->core.axi_clk);
-	kfree(xdprxss);
+	clk_disable_unprepare(xdprxss->rx_vid_clk);
+	clk_disable_unprepare(xdprxss->rx_lnk_clk);
+	clk_disable_unprepare(xdprxss->axi_clk);
+	for (i = 0; i < XDPRX_MAX_LANE_COUNT; i++) {
+		phy_exit(xdprxss->phy[i]);
+		xdprxss->phy[i] = NULL;
+	}
 	return 0;
 }
 
 static const struct of_device_id xdprxss_of_id_table[] = {
-  { .compatible = "xlnx,v-dp-rxss1-2.1"}, 
-  { }
+	{ .compatible = "xlnx,v-dp-rxss-3.0", },
+	{ /* end of table */ }
 };
 MODULE_DEVICE_TABLE(of, xdprxss_of_id_table);
 
 static struct platform_driver xdprxss_driver = {
-  .driver = {
-    .name		= "xilinx-dprxss",
-    .of_match_table	= xdprxss_of_id_table,
-  },
-  .probe			= xdprxss_probe,
-  .remove			= xdprxss_remove,
+	.driver = {
+		.name		= "xilinx-dprxss",
+		.of_match_table	= xdprxss_of_id_table,
+	},
+	.probe			= xdprxss_probe,
+	.remove			= xdprxss_remove,
 };
 
 module_platform_driver(xdprxss_driver);
 
-MODULE_AUTHOR("Rajesh Gugulothu <gugulot@xilinx.com>");
+MODULE_AUTHOR("Rajesh Gugulothu <gugulothu.rajesh@xilinx.com");
 MODULE_DESCRIPTION("Xilinx DP Rx Subsystem Driver");
 MODULE_LICENSE("GPL v2");
