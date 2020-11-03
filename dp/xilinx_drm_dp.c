@@ -1,12 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Xilinx DP Rx Subsystem
+ * Xilinx FPGA DisplayPort TX Subsystem Driver
  *
- * Copyright (C) 2020 Xilinx, Inc.
+ *  Copyright (C) 2020 Xilinx, Inc.
  *
  * Author: Rajesh Gugulothu <gugulothu.rajesh@xilinx.com>
+ *	 : Venkateshwar Rao G <vgannava.xilinx.com>
  *
  */
+#include <linux/bitfield.h>
+#include <linux/clk.h>
+#include <linux/component.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/gpio/consumer.h>
+#include <linux/of_address.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/phy/phy.h>
+#include <linux/phy/phy-dp.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+
 #include <drm/drmP.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
@@ -16,510 +31,242 @@
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
 
-#include <linux/gpio/consumer.h>
-#include <linux/clk.h>
-#include <linux/component.h>
-#include <linux/delay.h>
-#include <linux/device.h>
-#include <linux/of_address.h>
-#include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/phy/phy.h>
-#include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
-#include <linux/uaccess.h>
-#include <video/videomode.h>
-
-#include "include/linux/phy/phy-vphy.h"
-
-static uint xlnx_dp_aux_timeout_ms = 50;
-module_param_named(aux_timeout_ms, xlnx_dp_aux_timeout_ms, uint, 0444);
-MODULE_PARM_DESC(aux_timeout_ms, "DP aux timeout value in msec (default: 50)");
-
-/*
- * Some sink requires a delay after power on request
- */
-static uint xlnx_dp_power_on_delay_ms = 4;
-module_param_named(power_on_delay_ms, xlnx_dp_power_on_delay_ms, uint, 0444);
-MODULE_PARM_DESC(aux_timeout_ms, "DP power on delay in msec (default: 4)");
-
-/*
- * Dynamic Phy Configuration
- */
-u32 set_vphy(int);
-
 /* Link configuration registers */
-
-#define XLNX_DP_TX_LINK_BW_SET				0x0
-#define XLNX_DP_TX_LANE_CNT_SET				0x4
-#define XLNX_DP_TX_ENHANCED_FRAME_EN			0x8
-#define XLNX_DP_TX_TRAINING_PATTERN_SET			0xc
-#define XLNX_DP_TX_LINK_QUAL_PATTERN_SET		0x10
-#define XLNX_DP_TX_SCRAMBLING_DISABLE			0x14
-#define XLNX_DP_TX_DOWNSPREAD_CTL			0x18
-#define XLNX_DP_TX_SW_RESET				0x1c
-
-#define XLNX_DP_TX_SW_RESET_STREAM1			BIT(0)
-#define XLNX_DP_TX_SW_RESET_STREAM2			BIT(1)
-#define XLNX_DP_TX_SW_RESET_STREAM3			BIT(2)
-#define XLNX_DP_TX_SW_RESET_STREAM4			BIT(3)
-#define XLNX_DP_TX_SW_RESET_AUX				BIT(7)
-#define XLNX_DP_TX_SW_RESET_ALL	(XLNX_DP_TX_SW_RESET_STREAM1 | \
-					XLNX_DP_TX_SW_RESET_STREAM2 | \
-					XLNX_DP_TX_SW_RESET_STREAM3 | \
-					XLNX_DP_TX_SW_RESET_STREAM4 | \
-					XLNX_DP_TX_SW_RESET_AUX)
+#define XDPTX_LINKBW_SET_REG			0x0
+#define XDPTX_LANECNT_SET_REG			0x4
+#define XDPTX_EFRAME_EN_REG			0x8
+#define XDPTX_TRNGPAT_SET_REG			0xc
+#define XDPTX_SCRAMBLING_DIS_REG		0x14
+#define XDPTX_DOWNSPREAD_CTL_REG		0x18
 
 /* DPTX Core enable registers */
-#define XLNX_DP_TX_ENABLE				0x80
-#define XLNX_DP_TX_ENABLE_MAIN_STREAM			0x84
-#define XLNX_DP_TX_ENABLE_SEC_STREAM			0x88
-#define XLNX_DP_TX_FORCE_SCRAMBLER_RESET		0xc0
-#define XLNX_DP_TX_MST_CONFIG				0xd0
-#define XLNX_DP_TX_LINE_RESET_DISABLE			0xf0
-
-/*DPTX Core ID registers */
-#define XLNX_DP_TX_VERSION				0xf8
-#define XLNX_DP_TX_VERSION_MAJOR_MASK			GENMASK(31, 24)
-#define XLNX_DP_TX_VERSION_MAJOR_SHIFT			0x18
-#define XLNX_DP_TX_VERSION_MINOR_MASK			GENMASK(23, 16)
-#define XLNX_DP_TX_VERSION_MINOR_SHIFT			0x10
-#define XLNX_DP_TX_VERSION_REVISION_MASK		GENMASK(15, 12)
-#define XLNX_DP_TX_VERSION_REVISION_SHIFT		0xc
-#define XLNX_DP_TX_VERSION_PATCH_MASK			GENMASK(11, 8)
-#define XLNX_DP_TX_VERSION_PATCH_SHIFT			0x8
-#define XLNX_DP_TX_VERSION_INTERNAL_MASK		GENMASK(7, 0)
-#define XLNX_DP_TX_VERSION_INTERNAL_SHIFT		0x0
-
-/* Core ID registers */
-#define XLNX_DP_TX_CORE_ID				0xfc
-#define XLNX_DP_TX_CORE_ID_MAJOR_MASK			GENMASK(31, 24)
-#define XLNX_DP_TX_CORE_ID_MAJOR_SHIFT			0x18
-#define XLNX_DP_TX_CORE_ID_MINOR_MASK			GENMASK(23, 16)
-#define XLNX_DP_TX_CORE_ID_MINOR_SHIFT			0x10
-#define XLNX_DP_TX_CORE_ID_REVISION_MASK		GENMASK(15, 8)
-#define XLNX_DP_TX_CORE_ID_REVISION_SHIFT		0x8
-#define XLNX_DP_TX_CORE_ID_DIRECTION			GENMASK(1)
+#define XDPTX_ENABLE_REG			0x80
+#define XDPTX_MAINSTRM_ENABLE_REG		0x84
 
 /* AUX channel interface registers */
-#define XLNX_DP_TX_AUX_COMMAND				0x100
-#define XLNX_DP_TX_AUX_COMMAND_CMD_SHIFT		0x8
-#define XLNX_DP_TX_AUX_COMMAND_ADDRESS_ONLY		BIT(12)
-#define XLNX_DP_TX_AUX_COMMAND_BYTES_SHIFT		0x0
-#define XLNX_DP_TX_AUX_WRITE_FIFO			0x104
-#define XLNX_DP_TX_AUX_ADDRESS				0x108
-#define XLNX_DP_TX_CLK_DIVIDER				0x10c
-#define XLNX_DP_TX_CLK_DIVIDER_MHZ			1000000
-#define XLNX_DP_TX_CLK_DIVIDER_AUX_FILTER_SHIFT		0x8
-#define XLNX_DP_TX_USER_FIFO_OVERFLOW			0x110
-#define XLNX_DP_TX_INTR_SIGNAL_STATE			0x130
-#define XLNX_DP_TX_INTR_SIGNAL_STATE_HPD		BIT(0)
-#define XLNX_DP_TX_INTR_SIGNAL_STATE_REQUEST		BIT(1)
-#define XLNX_DP_TX_INTR_SIGNAL_STATE_REPLY		BIT(2)
-#define XLNX_DP_TX_INTR_SIGNAL_STATE_REPLY_TIMEOUT	BIT(3)
-#define XLNX_DP_TX_AUX_REPLY_DATA			0x134
-#define XLNX_DP_TX_AUX_REPLY_CODE			0x138
-#define XLNX_DP_TX_AUX_REPLY_CODE_AUX_ACK		(0)
-#define XLNX_DP_TX_AUX_REPLY_CODE_AUX_NACK		BIT(0)
-#define XLNX_DP_TX_AUX_REPLY_CODE_AUX_DEFER		BIT(1)
-#define XLNX_DP_TX_AUX_REPLY_CODE_I2C_ACK		(0)
-#define XLNX_DP_TX_AUX_REPLY_CODE_I2C_NACK		BIT(2)
-#define XLNX_DP_TX_AUX_REPLY_CODE_I2C_DEFER		BIT(3)
-#define XLNX_DP_TX_AUX_REPLY_CNT			0x13c
-#define XLNX_DP_TX_AUX_REPLY_CNT_MASK			0xff
-#define XLNX_DP_TX_INTR_STATUS				0x140
-#define XLNX_DP_TX_INTR_MASK				0x144
-#define XLNX_DP_TX_INTR_HPD_IRQ				BIT(0)
-#define XLNX_DP_TX_INTR_HPD_EVENT			0x2
-#define XLNX_DP_TX_INTR_REPLY_RECV			BIT(2)
-#define XLNX_DP_TX_INTR_REPLY_TIMEOUT			BIT(3)
-#define XLNX_DP_TX_INTR_HPD_PULSE			0x10
-#define XLNX_DP_TX_INTR_EXT_PKT_TXD			BIT(5)
-#define XLNX_DP_TX_INTR_CHBUF_UNDERFLW_MASK		0x3f0000
-#define XLNX_DP_TX_INTR_CHBUF_OVERFLW_MASK		0xfc00000
-#define XLNX_DP_TX_INTR_ALL		(XLNX_DP_TX_INTR_HPD_IRQ | \
-					 XLNX_DP_TX_INTR_HPD_EVENT | \
-					 XLNX_DP_TX_INTR_REPLY_RECV | \
-					 XLNX_DP_TX_INTR_REPLY_TIMEOUT | \
-					 XLNX_DP_TX_INTR_HPD_PULSE | \
-					 XLNX_DP_TX_INTR_EXT_PKT_TXD)
-#define XLNX_DP_TX_REPLY_DATA_CNT			0x148
-#define XLNX_DP_TX_REPLY_STATUS				0x14c
-#define XLNX_DP_TX_HPD_DURATION				0x150
+#define XDPTX_AUXCMD_REG			0x100
+#define XDPTX_AUX_WRITEFIFO_REG			0x104
+#define XDPTX_AUX_ADDR_REG			0x108
+#define XDPTX_AUXCMD_ADDRONLY_MASK		BIT(12)
+#define XDPTX_AUXCMD_SHIFT			0x8
+#define XDPTX_AUXCMD_BYTES_SHIFT		0x0
+#define XDPTX_AUX_READ_BIT				0x1
 
-#define XLNX_DP_SUB_TX_INTR_STATUS			0x3a0
-#define XLNX_DP_SUB_TX_INTR_MASK			0x3a4
-#define XLNX_DP_SUB_TX_INTR_EN				0x3a8
-#define XDP_TX_LINE_RESET_DISABLE			0x0F0
+#define XDPTX_CLKDIV_REG			0x10c
+#define XDPTX_CLKDIV_MHZ			1000000
+#define XDPTX_CLKDIV_AUXFILTER_SHIFT		0x8
+
+#define XDPTX_INTR_SIGSTATE_REG			0x130
+#define XDPTX_INTR_SIGHPDSTATE			BIT(0)
+#define XDPTX_INTR_SIGREQSTATE			BIT(1)
+#define XDPTX_INTR_SIGRPLYSTATE			BIT(2)
+#define XDPTX_INTR_RPLYTIMEOUT			BIT(3)
+
+#define XDPTX_AUXREPLY_DATA_REG			0x134
+#define XDPTX_AUXREPLY_CODE_REG			0x138
+#define XDPTX_AUXREPLYCODE_AUXACK_MASK		(0)
+#define XDPTX_AUXREPLYCODE_I2CACK_MASK		(0)
+
+#define XDPTX_AUXREPLY_DATACNT_REG		0x148
+#define XDPTX_AUXREPLY_DATACNT_MASK		GENMASK(7, 0)
+#define XDPTX_INTR_STATUS_REG			0x140
+#define XDPTX_INTR_MASK_REG			0x144
+#define XDPTX_INTR_HPDEVENT_MASK		BIT(1)
+#define XDPTX_INTR_HPDPULSE_MASK		BIT(4)
+#define XDPTX_INTR_CHBUFUNDFW_MASK		GENMASK(21, 16)
+#define XDPTX_INTR_CHBUFOVFW_MASK		GENMASK(27, 22)
+#define XDPTX_HPD_DURATION_REG			0x150
+
 /* Main stream attribute registers */
-#define XLNX_DP_TX_MAIN_STREAM_HTOTAL			0x180
-#define XLNX_DP_TX_MAIN_STREAM_VTOTAL			0x184
-#define XLNX_DP_TX_MAIN_STREAM_POLARITY			0x188
-#define XLNX_DP_TX_MAIN_STREAM_POLARITY_HSYNC_SHIFT	0x0
-#define XLNX_DP_TX_MAIN_STREAM_POLARITY_VSYNC_SHIFT	0x1
-#define XLNX_DP_TX_MAIN_STREAM_HSWIDTH			0x18c
-#define XLNX_DP_TX_MAIN_STREAM_VSWIDTH			0x190
-#define XLNX_DP_TX_MAIN_STREAM_HRES			0x194
-#define XLNX_DP_TX_MAIN_STREAM_VRES			0x198
-#define XLNX_DP_TX_MAIN_STREAM_HSTART			0x19c
-#define XLNX_DP_TX_MAIN_STREAM_VSTART			0x1a0
-#define XLNX_DP_TX_MAIN_STREAM_MISC0			0x1a4
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC		BIT(0)
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_FORMAT_SHIFT	0x1
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_DYNAMIC_RANGE	BIT(3)
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_YCBCR_COLRIMETRY	BIT(4)
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_BPC_SHIFT		0x5
-#define XLNX_DP_TX_MAIN_STREAM_MISC1			0x1a8
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_INTERLACED_VERT	BIT(0)
-#define XLNX_DP_TX_MAIN_STREAM_MISC0_STEREO_VID_SHIFT	0x1
-#define XLNX_DP_TX_M_VID				0x1ac
-#define XLNX_DP_TX_TRANSFER_UNIT_SIZE			0x1b0
-#define XLNX_DP_TX_DEF_TRANSFER_UNIT_SIZE		0x40
-#define XLNX_DP_TX_N_VID				0x1b4
-#define XLNX_DP_TX_USER_PIXEL_WIDTH			0x1b8
-#define XLNX_DP_TX_USER_DATA_CNT_PER_LANE		0x1bc
-#define XLNX_DP_TX_MAIN_STREAM_INTERLACED		0x1c0
-#define XLNX_DP_TX_MIN_BYTES_PER_TU			0x1c4
-#define XLNX_DP_TX_FRAC_BYTES_PER_TU			0x1c8
-#define XLNX_DP_TX_INIT_WAIT				0x1cc
+#define XDPTX_MAINSTRM_HTOTAL_REG		0x180
+#define XDPTX_MAINSTRM_VTOTAL_REG		0x184
+#define XDPTX_MAINSTRM_POL_REG			0x188
+#define XDPTX_MAINSTRM_POLHSYNC_SHIFT		0x0
+#define XDPTX_MAINSTRM_POLVSYNC_SHIFT		0x1
+#define XDPTX_MAINSTRM_HSWIDTH_REG		0x18c
+#define XDPTX_MAINSTRM_VSWIDTH_REG		0x190
+#define XDPTX_MAINSTRM_HRES_REG			0x194
+#define XDPTX_MAINSTRM_VRES_REG			0x198
+#define XDPTX_MAINSTRM_HSTART_REG		0x19c
+#define XDPTX_MAINSTRM_VSTART_REG		0x1a0
+#define XDPTX_MAINSTRM_MISC0_REG		0x1a4
+#define XDPTX_MAINSTRM_MISC0_MASK		BIT(0)
+#define XDPTX_MAINSTRM_MISC1_REG		0x1a8
+
+#define XDPTX_M_VID_REG				0x1ac
+#define XDPTX_TRANSFER_UNITSIZE_REG		0x1b0
+#define XDPTX_DEF_TRANSFER_UNITSIZE		0x40
+#define XDPTX_N_VID_REG				0x1b4
+#define XDPTX_USER_PIXELWIDTH_REG		0x1b8
+#define XDPTX_USER_DATACNTPERLANE_REG		0x1bc
+#define XDPTX_MINBYTES_PERTU_REG		0x1c4
+#define XDPTX_FRACBYTES_PERTU_REG		0x1c8
+#define XDPTX_INIT_WAIT_REG			0x1cc
 
 /* PHY configuration and status registers */
-#define XLNX_DP_TX_PHY_CONFIG				0x200
-#define XLNX_DP_TX_PHY_CONFIG_PHY_RESET			BIT(0)
-#define XLNX_DP_TX_PHY_CONFIG_GTTX_RESET		BIT(1)
-#define XLNX_DP_TX_PHY_CONFIG_PHY_PMA_RESET		BIT(8)
-#define XLNX_DP_TX_PHY_CONFIG_PHY_PCS_RESET		BIT(9)
-#define XLNX_DP_TX_PHY_CONFIG_ALL_RESET	(XLNX_DP_TX_PHY_CONFIG_PHY_RESET | \
-					XLNX_DP_TX_PHY_CONFIG_GTTX_RESET | \
-					XLNX_DP_TX_PHY_CONFIG_PHY_PMA_RESET | \
-					XLNX_DP_TX_PHY_CONFIG_PHY_PCS_RESET)
-#define XLNX_DP_TX_PHY_CONFIG_TX_PHY_POLARITY_LANE0_MASK	0x0020000
-#define XLNX_DP_TX_PHY_PREEMPHASIS_LANE_0		0x210
-#define XLNX_DP_TX_PHY_PREEMPHASIS_LANE_1		0x214
-#define XLNX_DP_TX_PHY_PREEMPHASIS_LANE_2		0x218
-#define XLNX_DP_TX_PHY_PREEMPHASIS_LANE_3		0x21c
-#define XLNX_DP_TX_PHY_VOLTAGE_DIFF_LANE_0		0x220
-#define XLNX_DP_TX_PHY_VOLTAGE_DIFF_LANE_1		0x224
-#define XLNX_DP_TX_PHY_VOLTAGE_DIFF_LANE_2		0x228
-#define XLNX_DP_TX_PHY_VOLTAGE_DIFF_LANE_3		0x22c
-#define XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING		0x234
-#define XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_162	0x1
-#define XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_270	0x3
-#define XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_540	0x5
-#define XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_810	0x5 /* DP 1.4 */
+#define XDPTX_PHYCONFIG_REG			0x200
+#define XDPTX_PHYCONFIG_RESET_MASK		BIT(0)
+#define XDPTX_PHYCONFIG_GTTXRESET_MASK		BIT(1)
+#define XDPTX_PHYCONFIG_PMARESET_MASK		BIT(8)
+#define XDPTX_PHYCONFIG_PCSRESET_MASK		BIT(9)
+#define XDPTX_PHYCONFIG_ALLRESET_MASK	(XDPTX_PHYCONFIG_RESET_MASK | \
+					 XDPTX_PHYCONFIG_GTTXRESET_MASK | \
+					 XDPTX_PHYCONFIG_PMARESET_MASK | \
+					 XDPTX_PHYCONFIG_PCSRESET_MASK)
 
-/* 0x0220, 0x224, 0x228, 0x22C: XLNX_DP_TX_PHY_VOLTAGE_DIFF_LANE_[0-3] */
-#define XLNX_DP_TX_VS_LEVEL_0				0x2
-#define XLNX_DP_TX_VS_LEVEL_1                           0x5
-#define XLNX_DP_TX_VS_LEVEL_2                           0x8
-#define XLNX_DP_TX_VS_LEVEL_3                           0xF
-#define XLNX_DP_TX_VS_LEVEL_OFFSET			0x4
-#define XDP_TX_MAXIMUM_VS_LEVEL                         0x3
+#define XDPTX_PHYCLOCK_FBSETTING_REG		0x234
+#define XDPTX_PHYCLOCK_FBSETTING162_MASK	0x1
+#define XDPTX_PHYCLOCK_FBSETTING270_MASK	0x3
+#define XDPTX_PHYCLOCK_FBSETTING810_MASK	0x5
 
-#define XLNX_DP_TX_PHY_POWER_DOWN			0x238
-#define XLNX_DP_TX_PHY_POWER_DOWN_LANE_0		BIT(0)
-#define XLNX_DP_TX_PHY_POWER_DOWN_LANE_1		BIT(1)
-#define XLNX_DP_TX_PHY_POWER_DOWN_LANE_2		BIT(2)
-#define XLNX_DP_TX_PHY_POWER_DOWN_LANE_3		BIT(3)
-#define XLNX_DP_TX_PHY_POWER_DOWN_ALL			0xf
-#define XLNX_DP_TX_PHY_PRECURSOR_LANE_0			0x23c
-#define XLNX_DP_TX_PHY_PRECURSOR_LANE_1			0x240
-#define XLNX_DP_TX_PHY_PRECURSOR_LANE_2			0x244
-#define XLNX_DP_TX_PHY_PRECURSOR_LANE_3			0x248
-#define XLNX_DP_TX_PHY_POSTCURSOR_LANE_0		0x24c
-#define XLNX_DP_TX_PHY_POSTCURSOR_LANE_1		0x250
-#define XLNX_DP_TX_PHY_POSTCURSOR_LANE_2		0x254
-#define XLNX_DP_TX_PHY_POSTCURSOR_LANE_3		0x258
+#define XDPTX_VS_PE_LEVEL_MAXCOUNT		0x3
+#define XDPTX_VS_LEVEL_MAXCOUNT			0x5
 
-#define XLNX_DP_TX_PE_LEVEL_0				0x0
-#define XLNX_DP_TX_PE_LEVEL_1                           0xE
-#define XLNX_DP_TX_PE_LEVEL_2                           0x14
-#define XLNX_DP_TX_PE_LEVEL_3                           0x1B
-#define XDP_TX_MAXIMUM_PE_LEVEL                         0x3
+#define XDPTX_PHYSTATUS_REG			0x280
+#define XDPTX_PHYSTATUS_FPGAPLLLOCK_MASK	BIT(6)
+#define XDPTX_MAX_RATE(bw, lanecnt, bpp)	((bw) * (lanecnt) * 8 / (bpp))
 
-#define XLNX_DP_TX_PHY_STATUS				0x280
-#define XLNX_DP_TX_PHY_STATUS_PLL_LOCKED_SHIFT		0x4
-#define XLNX_DP_TX_PHY_STATUS_FPGA_PLL_LOCKED		BIT(6)
-#define XLNX_DP_TX_GT_DRP_COMMAND			0x2a0
-#define XLNX_DP_TX_GT_DRP_READ_DATA			0x2a4
-#define XLNX_DP_TX_GT_DRP_CHANNEL_STATUS		0x2a8
+#define XDPTX_MISC0_RGB_MASK			(0)
+#define XDPTX_MISC0_YCRCB422_MASK		(5 << 1)
+#define XDPTX_MISC0_YCRCB444_MASK		GENMASK(3, 2)
+#define XDPTX_MISC0_FORMAT_MASK			GENMASK(3, 1)
+#define XDPTX_MISC0_BPC6_MASK			(0 << 5)
+#define XDPTX_MISC0_BPC8_MASK			BIT(5)
+#define XDPTX_MISC0_BPC10_MASK			BIT(6)
+#define XDPTX_MISC0_BPC12_MASK			GENMASK(6, 5)
+#define XDPTX_MISC0_BPC16_MASK			BIT(7)
+#define XDPTX_MISC0_BPC_MASK			GENMASK(7, 5)
+#define XDPTX_MISC1_YONLY_MASK			BIT(7)
 
-/* Audio registers */
-#define XLNX_DP_TX_AUDIO_CONTROL			0x300
-#define XLNX_DP_TX_AUDIO_CHANNELS			0x304
-#define XLNX_DP_TX_AUDIO_INFO_DATA			0x308
-#define XLNX_DP_TX_AUDIO_M_AUD				0x328
-#define XLNX_DP_TX_AUDIO_N_AUD				0x32c
-#define XLNX_DP_TX_AUDIO_EXT_DATA			0x330
+#define XDPTX_MAX_LANES				0x4
+#define XDPTX_MAX_FREQ				3000000
 
-#define XLNX_DP_TX_VIDEO_PACKING_CLOCK_CONTROL		0x90
+#define XDPTX_REDUCED_BIT_RATE			162000
+#define XDPTX_HIGH_BIT_RATE_1			270000
+#define XDPTX_HIGH_BIT_RATE_2			540000
+#define XDPTX_HIGH_BIT_RATE_3			810000
 
-#define XLNX_DP_MISC0_RGB				(0)
-#define XLNX_DP_MISC0_YCRCB_422				(5 << 1)
-#define XLNX_DP_MISC0_YCRCB_444				(6 << 1)
-#define XLNX_DP_MISC0_FORMAT_MASK			0xe
-#define XLNX_DP_MISC0_BPC_6				(0 << 5)
-#define XLNX_DP_MISC0_BPC_8				(1 << 5)
-#define XLNX_DP_MISC0_BPC_10				(2 << 5)
-#define XLNX_DP_MISC0_BPC_12				(3 << 5)
-#define XLNX_DP_MISC0_BPC_16				(4 << 5)
-#define XLNX_DP_MISC0_BPC_MASK				0xe0
-#define XLNX_DP_MISC1_Y_ONLY				(1 << 7)
+#define XDPTX_V1_2				0x12
+#define XDPTX_V1_4				0x14
 
-#define XLNX_DP_MAX_LANES				0x4
-#define XLNX_MAX_FREQ					3000000
+#define XDP_TRAIN_MAX_SWING_REACHED			BIT(2)
+#define XDP_TRAIN_PRE_EMPHASIS_SHIFT			GENMASK(1, 0)
+#define XDP_DPCD_TRAINING_LANEX_SET_MAX_PE_MASK		BIT(5)
 
-#define DP_REDUCED_BIT_RATE				162000
-#define DP_HIGH_BIT_RATE				270000
-#define DP_HIGH_BIT_RATE2				540000
-#define DP_HIGH_BIT_RATE3				810000
-#define DP_MAX_TRAINING_TRIES				0x5
-#define DP_V1_2						0x12
-#define DP_V1_4						0x14
-
-/* 0x00103-0x00106: TRAINING_LANE[0-3]_SET */
-#define XDP_DPCD_TRAINING_LANEX_SET_VS_MASK		0x03
-#define XDP_DPCD_TRAINING_LANEX_SET_MAX_VS_MASK		0x04
-#define XDP_DPCD_TRAINING_LANEX_SET_PE_MASK		0x18
-#define XDP_DPCD_TRAINING_LANEX_SET_PE_SHIFT		0x3
-#define XDP_DPCD_TRAINING_LANEX_SET_MAX_PE_MASK		0x20
-
-#define XVPHY_CHANNEL_ID_CH1				0x1
-#define XVPHY_CHANNEL_ID_CH2				0x2
-#define	XVPHY_CHANNEL_ID_CH3				0x3
-#define	XVPHY_CHANNEL_ID_CH4				0x4
-
-/* GTHE3. */
-#define XVPHY_GTHE3_DIFF_SWING_DP_L0			0x03
-#define XVPHY_GTHE3_DIFF_SWING_DP_L1			0x06
-#define XVPHY_GTHE3_DIFF_SWING_DP_L2			0x09
-#define XVPHY_GTHE3_DIFF_SWING_DP_L3			0x0F
-
-#define XVPHY_GTHE3_PREEMP_DP_L0			0x00
-#define XVPHY_GTHE3_PREEMP_DP_L1			0x0E
-#define XVPHY_GTHE3_PREEMP_DP_L2			0x14
-#define XVPHY_GTHE3_PREEMP_DP_L3			0x14
-
-/* 0x00206, 0x00207: ADJ_REQ_LANE_[0,2]_[1,3] */
-#define XDP_DPCD_ADJ_REQ_LANE_0_2_VS_MASK		0x03
-#define XDP_DPCD_ADJ_REQ_LANE_0_2_PE_MASK		0x0C
-#define XDP_DPCD_ADJ_REQ_LANE_0_2_PE_SHIFT		0x2
-#define XDP_DPCD_ADJ_REQ_LANE_1_3_VS_MASK		0x30
-#define XDP_DPCD_ADJ_REQ_LANE_1_3_VS_SHIFT		0x4
-#define XDP_DPCD_ADJ_REQ_LANE_1_3_PE_MASK		0xC0
-#define XDP_DPCD_ADJ_REQ_LANE_1_3_PE_SHIFT		0x6
-/* 0x0020C: ADJ_REQ_PC2 */
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_0_MASK		0x03
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_1_MASK		0x0C
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_1_SHIFT		0x2
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_2_MASK		0x30
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_2_SHIFT		0x4
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_3_MASK		0xC0
-#define XDP_DPCD_ADJ_REQ_PC2_LANE_3_SHIFT		0x6
-
-#define XDP_TX_PHY_PRECURSOR_LANE_0			0x23C
-#define XDP_TX_PHY_PRECURSOR_LANE_1			0x240
-#define XDP_TX_PHY_PRECURSOR_LANE_2			0x244
-#define XDP_TX_PHY_PRECURSOR_LANE_3			0x248
-#define XDP_TX_PHY_POSTCURSOR_LANE_0			0x24C
-#define XDP_TX_PHY_POSTCURSOR_LANE_1			0x250
-#define XDP_TX_PHY_POSTCURSOR_LANE_2			0x254
-#define XDP_TX_PHY_POSTCURSOR_LANE_3			0x258
-
-/* 0x07C, 0x080: TX_DRIVER_CH12, TX_DRIVER_CH34 */
-#define XVPHY_TX_DRIVER_TXDIFFCTRL_MASK(Ch) \
-		(0x000F << (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXDIFFCTRL_SHIFT(Ch) \
-		(16 * ((Ch - 1) % 2))
-#define XVPHY_TX_DRIVER_TXELECIDLE_MASK(Ch) \
-		(0x0010 << (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXELECIDLE_SHIFT(Ch) \
-		(4 + (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXINHIBIT_MASK(Ch) \
-		(0x0020 << (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXINHIBIT_SHIFT(Ch) \
-		(5 + (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXPOSTCURSOR_MASK(Ch) \
-		(0x07C0 << (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXPOSTCURSOR_SHIFT(Ch) \
-		(6 + (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXPRECURSOR_MASK(Ch) \
-		(0xF800 << (16 * ((Ch - 1) % 2)))
-#define XVPHY_TX_DRIVER_TXPRECURSOR_SHIFT(Ch) \
-		(11 + (16 * ((Ch - 1) % 2)))
+#define XDPTX_PHYPRECURSOR_LANE0_REG			0x23c
+#define XDPTX_PHYPOSTCURSOR_LANE0_REG			0x24c
 
 /* Transceiver PHY reset and Differential voltage swing */
-#define XDP_TX_PHY_CONFIG				0x200
-#define XDP_TX_PHY_VOLTAGE_DIFF_LANE_0			0x220
-#define XDP_TX_PHY_VOLTAGE_DIFF_LANE_1			0x224
-#define XDP_TX_PHY_VOLTAGE_DIFF_LANE_2			0x228
-#define XDP_TX_PHY_VOLTAGE_DIFF_LANE_3			0x22C
+#define XDPTX_PHYVOLTAGE_DIFFLANE0_REG			0x220
+#define XDPTX_VS_LEVEL_OFFSET				0x4
 
-/* 0x0220, 0x0224, 0x0228, 0x022C: XDP_TX_PHY_VOLTAGE_DIFF_LANE_[0-3] */
-#define XDP_TX_VS_LEVEL_0				0x2
-#define XDP_TX_VS_LEVEL_1				0x5
-#define XDP_TX_VS_LEVEL_2				0x8
-#define XDP_TX_VS_LEVEL_3				0xF
-#define XDP_TX_VS_LEVEL_OFFSET				0x4
+#define XDPTX_VTC_BASE					0x1000
 
-/* 0x024C, 0x0250, 0x0254, 0x0258: XDP_TX_PHY_POSTCURSOR_LANE_[0-3] */
-#define XDP_TX_PE_LEVEL_0				0x00
-#define XDP_TX_PE_LEVEL_1				0x0E
-#define XDP_TX_PE_LEVEL_2				0x14
-#define XDP_TX_PE_LEVEL_3				0x1B
+/* VTC register offsets and bit masks */
+#define XDPTX_VTC_CTL					0x000
+#define XDPTX_VTC_CTL_MASK				GENMASK(18, 8)
+#define XDPTX_VTC_CTL_GE				BIT(2)
+#define XDPTX_VTC_CTL_RU				BIT(1)
 
-#define VTC_BASE					0x1000
+#define XDPTX_VTC_GASIZE_F0				0x060
+#define XDPTX_VTC_ACTIVE_SIZE_MASK			GENMASK(12, 0)
 
-/*remaper color format*/
-#define XREMAP_COLOR_FORMAT_RGB			0	
-#define XREMAP_COLOR_FORMAT_YUV_444		1
-#define XREMAP_COLOR_FORMAT_YUV_422		2
+#define XDPTX_VTC_GFENC					0x068
+#define XDPTX_VTC_GFENC_MASK				BIT(6)
 
-/* register offsets */
-#define XVTC_CTL					0x000
-#define XVTC_VER					0x010
-#define XVTC_GASIZE					0x060
-#define XVTC_GENC					0x068
-#define XVTC_GPOL					0x06c
-#define XVTC_GHSIZE					0x070
-#define XVTC_GVSIZE					0x074
-#define XVTC_GHSYNC					0x078
-#define XVTC_GVBHOFF_F0					0x07c
-#define XVTC_GVSYNC_F0					0x080
-#define XVTC_GVSHOFF_F0					0x084
-#define XVTC_GVBHOFF_F1					0x088
-#define XVTC_GVSYNC_F1					0x08C
-#define XVTC_GVSHOFF_F1					0x090
-#define XVTC_GASIZE_F1					0x094
+#define XDPTX_VTC_GPOL					0x06c
+#define XDPTX_VTC_GPOL_FIELD_ID_POL			BIT(6)
+#define XDPTX_VTC_ACTIVE_CHROMA_POL			BIT(5)
+#define	XDPTX_VTC_ACTIVE_VIDEO_POL			BIT(4)
+#define XDPTX_VTC_HSYNC_POL				BIT(3)
+#define XDPTX_VTC_VSYNC_POL				BIT(2)
+#define XDPTX_VTC_HBLANK_POL				BIT(1)
+#define XDPTX_VTC_VBLANK_POL				BIT(0)
+#define XDPTX_VTC_GPOL_MASK		(XDPTX_VTC_VBLANK_POL |\
+					 XDPTX_VTC_HBLANK_POL |\
+					 XDPTX_VTC_VSYNC_POL |\
+					 XDPTX_VTC_HSYNC_POL |\
+					 XDPTX_VTC_ACTIVE_VIDEO_POL |\
+					 XDPTX_VTC_ACTIVE_CHROMA_POL)
 
-/* vtc control register bits */
-#define XVTC_CTL_SWRESET				BIT(31)
-#define XVTC_CTL_FIPSS					BIT(26)
-#define XVTC_CTL_ACPSS					BIT(25)
-#define XVTC_CTL_AVPSS					BIT(24)
-#define XVTC_CTL_HSPSS					BIT(23)
-#define XVTC_CTL_VSPSS					BIT(22)
-#define XVTC_CTL_HBPSS					BIT(21)
-#define XVTC_CTL_VBPSS					BIT(20)
-#define XVTC_CTL_VCSS					BIT(18)
-#define XVTC_CTL_VASS					BIT(17)
-#define XVTC_CTL_VBSS					BIT(16)
-#define XVTC_CTL_VSSS					BIT(15)
-#define XVTC_CTL_VFSS					BIT(14)
-#define XVTC_CTL_VTSS					BIT(13)
-#define XVTC_CTL_HBSS					BIT(11)
-#define XVTC_CTL_HSSS					BIT(10)
-#define XVTC_CTL_HFSS					BIT(9)
-#define XVTC_CTL_HTSS					BIT(8)
-#define XVTC_CTL_GE					BIT(2)
-#define XVTC_CTL_RU					BIT(1)
+#define XDPTX_VTC_INT_GPOL_MASK		(XDPTX_VTC_GPOL_FIELD_ID_POL |\
+					 XDPTX_VTC_ACTIVE_CHROMA_POL |\
+					 XDPTX_VTC_ACTIVE_VIDEO_POL)
 
-/* vtc generator polarity register bits */
-#define XVTC_GPOL_FIP					BIT(6)
-#define XVTC_GPOL_ACP					BIT(5)
-#define XVTC_GPOL_AVP					BIT(4)
-#define XVTC_GPOL_HSP					BIT(3)
-#define XVTC_GPOL_VSP					BIT(2)
-#define XVTC_GPOL_HBP					BIT(1)
-#define XVTC_GPOL_VBP					BIT(0)
+#define XDPTX_VTC_GHSIZE				0x070
+#define XDPTX_VTC_GHSIZE_FRAME_HSIZE			GENMASK(12, 0)
 
-/* vtc generator horizontal 1 */
-#define XVTC_GH1_BPSTART_MASK				GENMASK(28, 16)
-#define XVTC_GH1_BPSTART_SHIFT				16
-#define XVTC_GH1_SYNCSTART_MASK				GENMASK(12, 0)
-/* vtc generator vertical 1 (field 0) */
-#define XVTC_GV1_BPSTART_MASK				GENMASK(28, 16)
-#define XVTC_GV1_BPSTART_SHIFT				16
-#define XVTC_GV1_SYNCSTART_MASK				GENMASK(12, 0)
-/* vtc generator/detector vblank/vsync horizontal offset registers */
-#define XVTC_XVXHOX_HEND_MASK				GENMASK(28, 16)
-#define XVTC_XVXHOX_HEND_SHIFT				16
-#define XVTC_XVXHOX_HSTART_MASK				GENMASK(12, 0)
+#define XDPTX_VTC_GVSIZE				0x074
+#define XDPTX_VTC_FIELD1_VSIZE_SHIFT			16
+#define XDPTX_VTC_GVSIZE_FRAME_VSIZE			GENMASK(12, 0)
 
-#define XVTC_GHFRAME_HSIZE				GENMASK(12, 0)
-#define XVTC_GVFRAME_HSIZE_F1				GENMASK(12, 0)
-#define XVTC_GA_ACTSIZE_MASK				GENMASK(12, 0)
+#define XDPTX_VTC_GHSYNC				0x078
+#define XDPTX_VTC_GH1BPSTART_SHIFT			16
+#define XDPTX_VTC_GHSYNC_END_MASK			GENMASK(28, 16)
+#define XDPTX_VTC_GHSYNC_START_MASK			GENMASK(12, 0)
 
-/* vtc generator encoding register bits */
-#define XVTC_GENC_INTERL				BIT(6)
+#define XDPTX_VTC_GVBHOFF				0x07c
+#define XDPTX_VTC_F0VSYNC_HEND_SHIFT			16
+#define XDPTX_VTC_F0VBLANK_HEND_MASK			GENMASK(28, 16)
+#define XDPTX_VTC_F0VBLANK_HSTART_MASK			GENMASK(12, 0)
+
+#define XDPTX_VTC_GVSYNC				0x080
+#define XDPTX_VTC_F0_VSYNC_VEND_MASK			GENMASK(28, 16)
+#define XDPTX_VTC_F0_VSYNC_VSTART_MASK			GENMASK(12, 0)
+
+#define XDPTX_VTC_GVSHOFF				0x084
+#define XDPTX_VTC_GVBHOFF_F1				0x088
+#define XDPTX_VTC_GVSYNC_F1				0x08c
+#define XDPTX_VTC_GVSHOFF_F1				0x090
+#define XDPTX_VTC_GASIZE_F1				0x094
 
 /*
  * struct xlnx_dp_link_config - Common link config between source and sink
- * @max_rate: maximum link rate
- * @max_lanes: maximum number of lanes
+ * @max_rate: Miaximum link rate
+ * @max_lanes: Maximum number of lanes
  */
 struct xlnx_dp_link_config {
 	int max_rate;
 	u8 max_lanes;
 };
 
-/*
+/**
  * struct xlnx_dp_tx_link_config - configuration information of the source
  * @vs_level: voltage swing level
  * @pe_level: pre emphasis level
- * @pattern: training pattern
- * @tx_vs_levels: an array of supported voltage swing values
- * @tx_pe_levels: an array of supported pre emphasis values
- * @tx_vs_offset: offset value
- *
  */
 struct xlnx_dp_tx_link_config {
 	u8 vs_level;
 	u8 pe_level;
-	u8 pattern;
-	u8 tx_vs_levels[4];
-        u8 tx_pe_levels[4];
-        u8 tx_vs_offset;
-};
-
-/**
- *  struct xlnx_dp_rx_sink_config - Sink configuration
- *  @dpcd_rx_caps_field: an array of receiver capabilities
- *  @lane_status_adj_reqs: an array of sink response
- */
-struct xlnx_dp_rx_sink_config {
-	u8 dpcd_rx_caps_field[16];
-	u8 lane_status_adj_reqs[6];
 };
 
 /**
  * struct xlnx_dp_mode - Configured mode of DisplayPort
+ * @pclock: pixel clock frequency of current mode
  * @bw_code: code for bandwidth(link rate)
  * @lane_cnt: number of lanes
- * @pclock: pixel clock frequency of current mode
- * @fmt: format identifier string
  */
 struct xlnx_dp_mode {
+	int pclock;
 	u8 bw_code;
 	u8 lane_cnt;
-	int pclock;
-	const char *fmt;
 };
 
 /**
  * struct xlnx_dp_config - Configuration of DisplayPort from DTS
- * @max_lanes: maximum number of lanes
- * @max_link_rate: maximum supported link rate
- * @max_bpc: maximum bpc value
- * @max_pclock: maximum pixel clock value
- * @enable_yonly: boolean value of yonly color format support
- * @enable_ycrcb: boolean value of yuv color format support
- * @misc0: misc0 configuration
- * @misc1: misc1 configuration
- * @bpp: bits per pixel
- * @bpc: bits per component
- * @num_colors: number of color components
- * @ppc: pixels per component
+ * @max_lanes: Maximum number of lanes
+ * @max_link_rate: Maximum supported link rate
+ * @misc0: Misc0 configuration
+ * @bpp: Bits per pixel
+ * @bpc: Bits per component
+ * @num_colors: Number of color components
+ * @ppc: Pixels per component
+ * @fmt: Color format
  */
 struct xlnx_dp_config {
 	u32 max_lanes;
 	u32 max_link_rate;
-	u32 max_bpc;
-	u32 max_pclock;
-	bool enable_yonly;
-	bool enable_ycrcb;
 	u8 misc0;
-	u8 misc1;
 	u8 bpp;
 	u8 bpc;
 	u8 num_colors;
@@ -529,70 +276,59 @@ struct xlnx_dp_config {
 
 /**
  * struct xlnx_dp - Xilinx DisplayPort core
+ * @dev: device structure
  * @encoder: the drm encoder structure
  * @connector: the drm connector structure
  * @sync_prop: synchronous mode property
  * @bpc_prop: bpc mode property
- * @dev: device structure
- * @drm: DRM core
- * @iomem: device I/O memory for register access
- * @irq: irq
- * @config: IP core configuration from DTS
  * @aux: aux channel
+ * @config: IP core configuration from DTS
+ * @tx_link_config: source configuration
+ * @rx_config: sink configuration
+ * @link_config: common link configuration between IP core and sink device
+ * @drm: DRM core
+ * @mode: current mode between IP core and sink device
  * @phy: PHY handles for DP lanes
- * @num_lanes: number of enabled phy lanes
+ * @axi_lite_clk: axi lite clock
+ * @tx_vid_clk: tx video clock
+ * @reset_gpio: reset gpio
  * @hpd_work: hot plug detection worker
+ * @phy_opts: Opaque generic phy configuration
  * @status: connection status
- * @enabled: flag to indicate if the device is enabled
+ * @dp_base: Base address of DisplayPort Tx subsystem
  * @dpms: current dpms state
  * @dpcd: DP configuration data from currently connected sink device
- * @link_config: common link configuration between IP core and sink device
- * @tx_link_config: source configuration
- * @mode: current mode between IP core and sink device
  * @train_set: set of training data
- * @aclk: aux clock
- * @axi_lite_clk: axi lite clock
- * @xvphy_dev: pointer to video phy
- * @aclk_en: boolean value of aux clock enable status
+ * @num_lanes: number of enabled phy lanes
+ * @enabled: flag to indicate if the device is enabled
  *
  */
 struct xlnx_dp {
+	struct device *dev;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
 	struct drm_property *sync_prop;
 	struct drm_property *bpc_prop;
-	struct device *dev;
-	struct drm_device *drm;
-	void __iomem *iomem, *remap_iomem, *clkwiz_iomem;
-	struct gpio_desc *reset_gpio;	
-	int irq;
-	struct xlnx_dp_config config;
 	struct drm_dp_aux aux;
-	u8 num_lanes;
-	struct delayed_work hpd_work;
-	enum drm_connector_status status;
-	bool enabled;
-	int dpms;
-	u8 dpcd[DP_RECEIVER_CAP_SIZE];
-	struct xlnx_dp_link_config link_config;
+	struct xlnx_dp_config config;
 	struct xlnx_dp_tx_link_config tx_link_config;
-	struct xlnx_dp_rx_sink_config rx_config;
+	struct xlnx_dp_link_config link_config;
+	struct drm_device *drm;
 	struct xlnx_dp_mode mode;
-	u8 train_set[XLNX_DP_MAX_LANES];
-	struct clk *aclk;
+	struct phy *phy[XDPTX_MAX_LANES];
 	struct clk *axi_lite_clk;
 	struct clk *tx_vid_clk;
-	struct phy *phy[XLNX_DP_MAX_LANES];
-	struct xvphy_dev *dp_phy_dev;
-	bool aclk_en;
+	struct gpio_desc *reset_gpio;
+	struct delayed_work hpd_work;
+	union phy_configure_opts phy_opts;
+	enum drm_connector_status status;
+	void __iomem *dp_base;
+	int dpms;
+	u8 dpcd[DP_RECEIVER_CAP_SIZE];
+	u8 train_set[XDPTX_MAX_LANES];
+	u8 num_lanes;
+	unsigned int enabled : 1;
 };
-
-/* Function prototypes */
-void xlnx_dp_phy_set_tx_pre_emphasis(struct xlnx_dp *dp, u32 ChId, u8 Pe);
-void xlnx_dp_phy_set_tx_voltage_swing(struct xlnx_dp *dp, u32 ChId, u8 Vs);
-void xlnx_dp_pt_pe_vs_adjust_handler(struct xlnx_dp *dp);
-static void xlnx_dp_tx_set_vswing_preemp(struct xlnx_dp *dp, u8 *AuxData);
-int xlnx_dp_istxconnected(struct xlnx_dp *dp);
 
 static inline struct xlnx_dp *encoder_to_dp(struct drm_encoder *encoder)
 {
@@ -614,174 +350,98 @@ static u32 xlnx_dp_read(void __iomem *base, int offset)
 	return readl(base + offset);
 }
 
+static void xlnx_dp_set(void __iomem *base, int offset, u32 set)
+{
+	xlnx_dp_write(base, offset, xlnx_dp_read(base, offset) | set);
+}
+
 static void xlnx_dp_clr(void __iomem *base, int offset, u32 clr)
 {
 	xlnx_dp_write(base, offset, xlnx_dp_read(base, offset) & ~clr);
 }
 
-/**
- * xlnx_vtc_enable - Enable timing controller
- * @base:       Base address of DP Tx subsystem
- *
- * This function enables the DP Tx subsystem's timing controller
- */
-static void xlnx_vtc_enable(struct xlnx_dp *dp)
-{
-	u32 reg = 0;
-
-	reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_CTL);
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_CTL, reg | XVTC_CTL_GE);
-}
-
-/**
- * xlnx_vtc_disable - Disable timing controller
- * @base:       Base address of DP Tx subsystem
- *
- * This function disables the DP Tx subsystem's timing controller
- */
-static void xlnx_vtc_disable(struct xlnx_dp *dp)
-{
-	u32 reg;
-
-	reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_CTL);
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_CTL, reg & ~XVTC_CTL_GE);
-}
-
-/**
- * remap_reset  - Reset the remapper IP before stream on 
- * @remap:Remapper device instance
- * Toggle the reset gpio .
- */
-static void remap_reset(struct xlnx_dp *dp)
-{
-	
-	gpiod_set_raw_value(dp->reset_gpio, 0);
-	udelay(1);
-	gpiod_set_raw_value(dp->reset_gpio, 1);
-
-}
-static int xlnx_vtc_set_timing(struct xlnx_dp *dp, struct videomode *vm)
+static void xlnx_dp_vtc_set_timing(struct xlnx_dp *dp,
+				   struct drm_display_mode *mode)
 {
 	u32 reg;
 	u32 htotal, hactive, hsync_start, hbackporch_start;
 	u32 vtotal, vactive, vsync_start, vbackporch_start;
+	u32 hsync_len, hfront_porch, hback_porch;
+	u32 vsync_len, vfront_porch, vback_porch;
 
-	htotal = vm->hactive + vm->hfront_porch + vm->hsync_len +
-			vm->hback_porch;
-	vtotal = vm->vactive + vm->vfront_porch + vm->vsync_len +
-		vm->vback_porch;
+	/*
+	 * TODO : For now driver does not support interlace mode
+	 * In future  driver may add interlace support
+	 */
 
-	hactive = vm->hactive;
-	vactive = vm->vactive;
+	/*
+	 * Note that pixels-per-clock for video data and timing is non-existent
+	 * in the Video Timing Controller. There is only a single set of timing
+	 * signals for the video data bus. This means that horizontal (acive
+	 * pixles, hsync, hblank) timing settings can be detected and generated
+	 * only for a multiple of the pixels-per-clock configured in the system.
+	 */
+	hactive = mode->hdisplay / dp->config.ppc;
+	hfront_porch = (mode->hsync_start - mode->hdisplay) / dp->config.ppc;
+	hback_porch = (mode->htotal - mode->hsync_end) / dp->config.ppc;
+	hsync_len = (mode->hsync_end - mode->hsync_start) / dp->config.ppc;
+	htotal = hactive + hfront_porch + hsync_len + hback_porch;
+	hsync_start = hactive + hfront_porch;
+	hbackporch_start = hsync_start + hsync_len;
 
-	hsync_start = vm->hactive + vm->hfront_porch;
-	vsync_start = vm->vactive + vm->vfront_porch;
+	vactive = mode->vdisplay;
+	vfront_porch = mode->vsync_start - mode->vdisplay;
+	vback_porch = mode->vtotal - mode->vsync_end;
+	vsync_len = mode->vsync_end - mode->vsync_start;
+	vtotal = vactive + vfront_porch + vsync_len + vback_porch;
+	vsync_start = vactive + vfront_porch;
+	vbackporch_start = vsync_start + vsync_len;
 
-	hbackporch_start = hsync_start + vm->hsync_len;
-	vbackporch_start = vsync_start + vm->vsync_len - 1;
+	reg = htotal & XDPTX_VTC_GHSIZE_FRAME_HSIZE;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GHSIZE, reg);
 
-	reg = htotal & XVTC_GHFRAME_HSIZE;
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GHSIZE, reg);
+	reg = vtotal & XDPTX_VTC_GVSIZE_FRAME_VSIZE;
+	reg |= reg << XDPTX_VTC_FIELD1_VSIZE_SHIFT;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSIZE, reg);
 
-	reg = vtotal & XVTC_GVFRAME_HSIZE_F1;
-	reg |= reg << XVTC_GV1_BPSTART_SHIFT;
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVSIZE, reg);
-	reg = hactive & XVTC_GA_ACTSIZE_MASK;
-	reg |= (vactive & XVTC_GA_ACTSIZE_MASK) << 16;
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GASIZE, reg);
+	reg = hactive & XDPTX_VTC_ACTIVE_SIZE_MASK;
+	reg |= (vactive & XDPTX_VTC_ACTIVE_SIZE_MASK) <<
+		XDPTX_VTC_FIELD1_VSIZE_SHIFT;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GASIZE_F0, reg);
 
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED)
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GASIZE_F1, reg);
+	reg = hsync_start & XDPTX_VTC_GHSYNC_START_MASK;
+	reg |= (hbackporch_start << XDPTX_VTC_GH1BPSTART_SHIFT) &
+		XDPTX_VTC_GHSYNC_END_MASK;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GHSYNC, reg);
 
-	reg = hsync_start & XVTC_GH1_SYNCSTART_MASK;
-	reg |= (hbackporch_start << XVTC_GH1_BPSTART_SHIFT) &
-		XVTC_GH1_BPSTART_MASK;
+	reg = vsync_start & XDPTX_VTC_F0_VSYNC_VSTART_MASK;
+	reg |= (vbackporch_start << XDPTX_VTC_FIELD1_VSIZE_SHIFT) &
+		XDPTX_VTC_F0_VSYNC_VEND_MASK;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSYNC, reg);
+	xlnx_dp_clr(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GFENC,
+		    XDPTX_VTC_GFENC_MASK);
 
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GHSYNC, reg);
-	vsync_start = vsync_start - 1;
-	reg = vsync_start & XVTC_GV1_SYNCSTART_MASK;
-	reg |= (vbackporch_start << XVTC_GV1_BPSTART_SHIFT) &
-		XVTC_GV1_BPSTART_MASK;
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVSYNC_F0, reg);
-
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED) {
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVSYNC_F1, reg);
-		reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_GENC) |
-					XVTC_GENC_INTERL;
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GENC, reg);
-	} else {
-		reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_GENC) &
-					~XVTC_GENC_INTERL;
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GENC, reg);
-	}
-
-	/* configure horizontal offset */
 	/* Calculate and update Generator VBlank Hori field 0 */
-	reg = hactive & XVTC_XVXHOX_HSTART_MASK;
-	reg |= (hactive << XVTC_XVXHOX_HEND_SHIFT) &
-		XVTC_XVXHOX_HEND_MASK;
-
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVBHOFF_F0, reg);
+	reg = hactive & XDPTX_VTC_F0VBLANK_HSTART_MASK;
+	reg |= (hactive << XDPTX_VTC_F0VSYNC_HEND_SHIFT) &
+		XDPTX_VTC_F0VBLANK_HEND_MASK;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVBHOFF, reg);
 
 	/* Calculate and update Generator VSync Hori field 0 */
-	reg = hsync_start & XVTC_XVXHOX_HSTART_MASK;
-	reg |= (hsync_start << XVTC_XVXHOX_HEND_SHIFT) &
-		XVTC_XVXHOX_HEND_MASK;
+	reg = hsync_start & XDPTX_VTC_F0VBLANK_HSTART_MASK;
+	reg |= (hsync_start << XDPTX_VTC_F0VSYNC_HEND_SHIFT) &
+		XDPTX_VTC_F0VBLANK_HEND_MASK;
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSHOFF, reg);
 
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVSHOFF_F0, reg);
-
-	/* Calculate and update Generator VBlank Hori field 1 */
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED) {
-		reg = hactive & XVTC_XVXHOX_HSTART_MASK;
-		reg |= (hactive << XVTC_XVXHOX_HEND_SHIFT) &
-			XVTC_XVXHOX_HEND_MASK;
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVBHOFF_F1, reg);
-	}
-	/* Calculate and update Generator VBlank Hori field 1 */
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED) {
-		reg =  (hsync_start - (htotal / 2)) & XVTC_XVXHOX_HSTART_MASK;
-		reg |= ((hsync_start - (htotal / 2)) <<
-			XVTC_XVXHOX_HEND_SHIFT) & XVTC_XVXHOX_HEND_MASK;
-	} else {
-		reg =  hsync_start & XVTC_XVXHOX_HSTART_MASK;
-		reg |= (hsync_start << XVTC_XVXHOX_HEND_SHIFT) &
-			XVTC_XVXHOX_HEND_MASK;
-	}
-
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED)
-		xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GVSHOFF_F1, reg);
-
-	/* configure polarity of signals */
-	reg = 0;
-	reg |= XVTC_GPOL_ACP;
-	reg |= XVTC_GPOL_AVP;
-	if (vm->flags & DISPLAY_FLAGS_INTERLACED)
-		reg |= XVTC_GPOL_FIP;
-	reg |= XVTC_GPOL_VBP;
-	reg |= XVTC_GPOL_VSP;
-	reg |= XVTC_GPOL_HBP;
-	reg |= XVTC_GPOL_HSP;
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_GPOL, reg);
+	/* sets all polarities as active high */
+	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GPOL,
+		      XDPTX_VTC_GPOL_MASK);
 
 	/* configure timing source */
-	reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_CTL);
-	reg |= XVTC_CTL_VCSS;
-	reg |= XVTC_CTL_VASS;
-	reg |= XVTC_CTL_VBSS;
-	reg |= XVTC_CTL_VSSS;
-	reg |= XVTC_CTL_VFSS;
-	reg |= XVTC_CTL_VTSS;
-	reg |= XVTC_CTL_HBSS;
-	reg |= XVTC_CTL_HSSS;
-	reg |= XVTC_CTL_HFSS;
-	reg |= XVTC_CTL_HTSS;
-
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_CTL, reg);
-
-	reg = xlnx_dp_read(dp->iomem, VTC_BASE + XVTC_CTL);
-	xlnx_dp_write(dp->iomem, VTC_BASE + XVTC_CTL, reg | XVTC_CTL_RU);
-
-	return 0;
+	xlnx_dp_set(dp->dp_base,
+		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_MASK);
+	xlnx_dp_set(dp->dp_base,
+		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_RU);
 }
 
 /**
@@ -800,61 +460,63 @@ static void xlnx_dp_update_bpp(struct xlnx_dp *dp)
 }
 
 /**
- * xlnx_dp_set_color - Set the color
+ * xlnx_dp_set_color - Set the color format
  * @dp: DisplayPort IP core structure
- * @color: color string, from xlnx_disp_color_enum
+ * @drm_fourcc: Color string, from xlnx_disp_color_enum
  *
- * Update misc register values based on @color string.
- *
- * Return: 0 on success, or -EINVAL.
+ * This function updates misc register values based on color string.
  */
-static int xlnx_dp_set_color(struct xlnx_dp *dp, u32 drm_fourcc)
+static void xlnx_dp_set_color(struct xlnx_dp *dp, u32 drm_fourcc)
 {
 	struct xlnx_dp_config *config = &dp->config;
 
-	config->misc0 &= ~XLNX_DP_MISC0_FORMAT_MASK;
-	config->misc1 &= ~XLNX_DP_MISC1_Y_ONLY;
-	
-	switch(drm_fourcc) {
+	config->misc0 &= ~XDPTX_MISC0_FORMAT_MASK;
 
+	switch (drm_fourcc) {
 	case DRM_FORMAT_XBGR8888:
+		/* fall-through */
 	case DRM_FORMAT_XRGB8888:
+		/* fall-through */
 	case DRM_FORMAT_BGR888:
+		/* fall-through */
 	case DRM_FORMAT_RGB888:
+		/* fall-through */
 	case DRM_FORMAT_XBGR2101010:
-		config->misc0 |= XLNX_DP_MISC0_RGB;
+		config->misc0 |= XDPTX_MISC0_RGB_MASK;
 		config->num_colors = 3;
-		config->fmt = XREMAP_COLOR_FORMAT_RGB;
-		break; 
+		config->fmt = 0x0;
+		break;
 	case DRM_FORMAT_VUY888:
+		/* fall-through */
 	case DRM_FORMAT_XVUY8888:
+		/* fall-through */
 	case DRM_FORMAT_Y8:
+		/* fall-through */
 	case DRM_FORMAT_XVUY2101010:
+		/* fall-through */
 	case DRM_FORMAT_Y10:
-		config->misc0 |= XLNX_DP_MISC0_YCRCB_444;
+		config->misc0 |= XDPTX_MISC0_YCRCB444_MASK;
 		config->num_colors = 3;
-		config->fmt = XREMAP_COLOR_FORMAT_YUV_444;
+		config->fmt = 0x1;
 		break;
-	case DRM_FORMAT_YUYV: 
-	case DRM_FORMAT_UYVY: 
-	case DRM_FORMAT_NV16: 
-	case DRM_FORMAT_XV20: 
-		config->misc0 |= XLNX_DP_MISC0_YCRCB_422;
+	case DRM_FORMAT_YUYV:
+		/* fall-through */
+	case DRM_FORMAT_UYVY:
+		/* fall-through */
+	case DRM_FORMAT_NV16:
+		/* fall-through */
+	case DRM_FORMAT_XV20:
+		config->misc0 |= XDPTX_MISC0_YCRCB422_MASK;
 		config->num_colors = 2;
-		config->fmt = XREMAP_COLOR_FORMAT_YUV_422;
+		config->fmt = 0x2;
 		break;
-          default:
-		printk("Warning: Unknown drm_fourcc format code: %d\n", drm_fourcc);
-		config->misc0 |= XLNX_DP_MISC0_RGB;
-         }
+	default:
+		dev_dbg(dp->dev, "Warning: Unknown drm_fourcc format :%d\n",
+			drm_fourcc);
+		config->misc0 |= XDPTX_MISC0_RGB_MASK;
+	}
 	xlnx_dp_update_bpp(dp);
-
-	return 0;
 }
-
-/*
- * DP PHY functions
- */
 
 /**
  * xlnx_dp_init_phy - Initialize the phy
@@ -867,11 +529,22 @@ static int xlnx_dp_set_color(struct xlnx_dp *dp, u32 drm_fourcc)
  */
 static int xlnx_dp_init_phy(struct xlnx_dp *dp)
 {
+	unsigned int i;
+	int ret;
 
-	xlnx_dp_clr(dp->iomem, XLNX_DP_TX_PHY_CONFIG,
-			XLNX_DP_TX_PHY_CONFIG_ALL_RESET);
+	xlnx_dp_clr(dp->dp_base, XDPTX_PHYCONFIG_REG,
+		    XDPTX_PHYCONFIG_ALLRESET_MASK);
 
-	return 0;
+	for (i = 0; i < XDPTX_MAX_LANES; i++) {
+		ret = phy_init(dp->phy[i]);
+		if (ret) {
+			dev_err(dp->dev,
+				"failed to init phy lane %d\n", i);
+			return ret;
+		}
+	}
+
+	return ret;
 }
 
 /**
@@ -885,18 +558,19 @@ static void xlnx_dp_exit_phy(struct xlnx_dp *dp)
 	unsigned int i;
 	int ret;
 
-	for (i = 0; i < XLNX_DP_MAX_LANES; i++) {
+	for (i = 0; i < XDPTX_MAX_LANES; i++) {
 		ret = phy_exit(dp->phy[i]);
 		if (ret)
 			dev_err(dp->dev, "fail to exit phy(%d) %d\n", i, ret);
+		dp->phy[i] = NULL;
 	}
 }
 
 /**
- * xlnx_dp_phy_ready - Check if PHY is ready
+ * xlnx_dp_phy_ready - check if PHY is ready
  * @dp: DisplayPort IP core structure
  *
- * Check if PHY is ready. If PHY is not ready, wait 1ms to check for 100 times.
+ * check if PHY is ready. If PHY is not ready, wait 1ms to check for 100 times.
  * This amount of delay was suggested by IP designer.
  *
  * Return: 0 if PHY is ready, or -ENODEV if PHY is not ready.
@@ -905,12 +579,12 @@ static int xlnx_dp_phy_ready(struct xlnx_dp *dp)
 {
 	u32 i, reg, ready;
 
-	ready = (1 << XLNX_DP_MAX_LANES) - 1;
-	ready |= XLNX_DP_TX_PHY_STATUS_FPGA_PLL_LOCKED;
+	ready = (1 << XDPTX_MAX_LANES) - 1;
+	ready |= XDPTX_PHYSTATUS_FPGAPLLLOCK_MASK;
 
 	/* Wait for 100ms. This should be enough time for PHY to be ready */
 	for (i = 0; ; i++) {
-		reg = xlnx_dp_read(dp->iomem, XLNX_DP_TX_PHY_STATUS);
+		reg = xlnx_dp_read(dp->dp_base, XDPTX_PHYSTATUS_REG);
 		if ((reg & ready) == ready)
 			return 0;
 		if (i == 100) {
@@ -921,23 +595,6 @@ static int xlnx_dp_phy_ready(struct xlnx_dp *dp)
 	}
 
 	return 0;
-}
-
-/*
- * DP functions
- */
-
-/**
- * xlnx_dp_max_rate - Calculate and return available max pixel clock
- * @link_rate: link rate (Kilo-bytes / sec)
- * @lane_num: number of lanes
- * @bpp: bits per pixel
- *
- * Return: max pixel clock (KHz) supported by current link config.
- */
-static inline int xlnx_dp_max_rate(int link_rate, u8 lane_num, u8 bpp)
-{
-	return link_rate * lane_num * 8 / bpp;
 }
 
 /**
@@ -954,36 +611,43 @@ static inline int xlnx_dp_max_rate(int link_rate, u8 lane_num, u8 bpp)
  * Return: Current link rate code, or -EINVAL.
  */
 static int xlnx_dp_mode_configure(struct xlnx_dp *dp, int pclock,
-				    u8 current_bw)
+				  u8 current_bw)
 {
-
 	int max_rate = dp->link_config.max_rate;
-	u8 bws[4] = { DP_LINK_BW_1_62, DP_LINK_BW_2_7,
-			DP_LINK_BW_5_4, DP_LINK_BW_8_1 };
+	u8 bw_code;
 	u8 max_lanes = dp->link_config.max_lanes;
 	u8 max_link_rate_code = drm_dp_link_rate_to_bw_code(max_rate);
 	u8 bpp = dp->config.bpp;
 	u8 lane_cnt;
-	s8 i;
 
-	if (current_bw == DP_LINK_BW_1_62) {
-		dev_info(dp->dev, "can't downshift. already lowest\n");
+	/* Downshift from current bandwidth */
+	switch (current_bw) {
+	case DP_LINK_BW_8_1:
+		bw_code = DP_LINK_BW_5_4;
+		break;
+	case DP_LINK_BW_5_4:
+		bw_code = DP_LINK_BW_2_7;
+		break;
+	case DP_LINK_BW_2_7:
+		bw_code = DP_LINK_BW_1_62;
+		break;
+	case DP_LINK_BW_1_62:
+		dev_err(dp->dev, "can't downshift. already lowest link rate\n");
 		return -EINVAL;
+	default:
+		/* If not given, start with max supported */
+		bw_code = max_link_rate_code;
+		break;
 	}
-	for (i = ARRAY_SIZE(bws) - 1; i >= 0; i--) {
-		if (current_bw && bws[i] >= current_bw)
-			continue;
-		if (bws[i] <= max_link_rate_code)
-			break;
-	}
+
 	for (lane_cnt = max_lanes; lane_cnt >= 1; lane_cnt >>= 1) {
 		int bw;
 		u32 rate;
 
-		bw = drm_dp_bw_code_to_link_rate(bws[i]);
-		rate = xlnx_dp_max_rate(bw, lane_cnt, bpp);
+		bw = drm_dp_bw_code_to_link_rate(bw_code);
+		rate = XDPTX_MAX_RATE(bw, lane_cnt, bpp);
 		if (pclock <= rate) {
-			dp->mode.bw_code = bws[i];
+			dp->mode.bw_code = bw_code;
 			dp->mode.lane_cnt = lane_cnt;
 			dp->mode.pclock = pclock;
 			return dp->mode.bw_code;
@@ -996,272 +660,145 @@ static int xlnx_dp_mode_configure(struct xlnx_dp *dp, int pclock,
 }
 
 /**
- * xlnx_dp_phy_set_tx_pre_emphasis - Configure the pe values
+ * xlnx_dp_tx_set_vswing_preemp - This function sets current voltage swing and
+ * pre-emphasis level settings from the link_config structure to hardware.
  * @dp: DisplayPort IP core structure
- * @chid: channel index
- * @pe: pe value to be set
- *
- * This function sets the preemphasis value of the phy
+ * @aux_data: Aux_data is a pointer to the array used for preparing a burst
+ * write over the AUX channel.
  */
-
-void xlnx_dp_phy_set_tx_pre_emphasis(struct xlnx_dp *dp, u32 chid, u8 pe)
+static void xlnx_dp_tx_set_vswing_preemp(struct xlnx_dp *dp, u8 *aux_data)
 {
-	u32 regval;
-	u32 maskval;
-	u32 regoffset;
+	static const u32 tx_pe_levels[] = { 0x00, 0x0e, 0x14, 0x1b };
+	static const u8 tx_vs_levels[] = { 0x2, 0x5, 0x8, 0xf };
+	u32 pe_level, vs_level;
+	u8 data, i;
 
+	u8 vs_level_rx = dp->tx_link_config.vs_level;
+	u8 pe_level_rx = dp->tx_link_config.pe_level;
 
-	if (chid == XVPHY_CHANNEL_ID_CH1 || chid == XVPHY_CHANNEL_ID_CH2)
-		regoffset = XVPHY_TX_DRIVER_CH12_REG;
-	else
-		regoffset = XVPHY_TX_DRIVER_CH34_REG;
+	pe_level = tx_pe_levels[pe_level_rx];
+	vs_level = tx_vs_levels[vs_level_rx];
 
-	regval = xlnx_dp_read(dp->dp_phy_dev->iomem, regoffset);
-	maskval = XVPHY_TX_DRIVER_TXPRECURSOR_MASK(chid);
-	regval &= ~maskval;
-	regval |= (pe << XVPHY_TX_DRIVER_TXPRECURSOR_SHIFT(chid));
-	xlnx_dp_write(dp->dp_phy_dev->iomem, regoffset, regval);
-}
+	/*
+	 * Redriver in path requires different voltage-swing and pre-emphasis
+	 * values. Below case assumes there is no redriver in the path so
+	 * voltage-swing compensation offset is used when pre-emphasis is used.
+	 * See the VESA DisplayPort v1.4 Specification, section 3.6.1.1.
+	 */
+	if (!pe_level_rx)
+		vs_level += XDPTX_VS_LEVEL_OFFSET;
 
-/**
- * xlnx_dp_phy_set_tx_voltage_swing - Configure the vs values
- * @dp: DisplayPort IP core structure
- * @chid: channel index
- * @vs: vs value to be set
- * 
- * This function sets the voltage swing value of the phy
- */
+	data = (pe_level_rx << XDP_TRAIN_PRE_EMPHASIS_SHIFT) |
+		vs_level_rx;
 
-void xlnx_dp_phy_set_tx_voltage_swing(struct xlnx_dp *dp, u32 chid, u8 vs)
-{
-	u32 regval;
-	u32 maskval;
-	u32 regoffset;
+	if (vs_level_rx == XDPTX_VS_PE_LEVEL_MAXCOUNT)
+		data |= XDP_TRAIN_MAX_SWING_REACHED;
+	if (pe_level_rx == XDPTX_VS_PE_LEVEL_MAXCOUNT)
+		data |= XDP_DPCD_TRAINING_LANEX_SET_MAX_PE_MASK;
 
-	if (chid == XVPHY_CHANNEL_ID_CH1 || chid == XVPHY_CHANNEL_ID_CH2)
-		regoffset = XVPHY_TX_DRIVER_CH12_REG;
-	else
-		regoffset = XVPHY_TX_DRIVER_CH34_REG;
+	memset(aux_data, data, XDPTX_MAX_LANES);
 
-	regval = xlnx_dp_read(dp->dp_phy_dev->iomem, regoffset);
-	maskval = XVPHY_TX_DRIVER_TXDIFFCTRL_MASK(chid);
-	regval &= ~maskval;
-	regval |= (vs << XVPHY_TX_DRIVER_TXDIFFCTRL_SHIFT(chid));
-	xlnx_dp_write(dp->dp_phy_dev->iomem, regoffset, regval);
-}
-
-/**
- * xlnx_dp_pt_pe_vs_adjust_handler - Calculate and configure pe and vs values
- * @dp: DisplayPort IP core structure
- *
- * This function adjusts the pre emphasis and voltage swing values of phy.
- */
-
-void xlnx_dp_pt_pe_vs_adjust_handler(struct xlnx_dp *dp)
-{
-	unsigned char preemp = 0, diff_swing = 0;
-
-	switch (dp->tx_link_config.pe_level) {
-	case 0:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L0; break;
-	case 1:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L1; break;
-	case 2:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L2; break;
-	case 3:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L3; break;
+	for (i = 0; i < dp->mode.lane_cnt; i++) {
+		xlnx_dp_write(dp->dp_base,
+			      XDPTX_PHYPRECURSOR_LANE0_REG + 4 * i, 0x0);
+		xlnx_dp_write(dp->dp_base,
+			      XDPTX_PHYVOLTAGE_DIFFLANE0_REG + 4 * i, vs_level);
+		xlnx_dp_write(dp->dp_base,
+			      XDPTX_PHYPOSTCURSOR_LANE0_REG + 4 * i, pe_level);
 	}
-
-	xlnx_dp_phy_set_tx_pre_emphasis(dp, XVPHY_CHANNEL_ID_CH1, preemp);
-	xlnx_dp_phy_set_tx_pre_emphasis(dp, XVPHY_CHANNEL_ID_CH2, preemp);
-	xlnx_dp_phy_set_tx_pre_emphasis(dp, XVPHY_CHANNEL_ID_CH3, preemp);
-	xlnx_dp_phy_set_tx_pre_emphasis(dp, XVPHY_CHANNEL_ID_CH4, preemp);
-
-	switch (dp->tx_link_config.vs_level) {
-	case 0:
-		switch (dp->tx_link_config.pe_level) {
-		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L0;
-			break;
-		case 1:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
-			break;
-		case 2:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
-		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
-		}
-		break;
-	case 1:
-		switch (dp->tx_link_config.pe_level) {
-		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
-			break;
-		case 1:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
-		case 2:
-		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
-		}
-		break;
-	case 2:
-		switch (dp->tx_link_config.pe_level) {
-		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
-		case 1:
-		case 2:
-		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
-		}
-		break;
-	case 3:
-		diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-		break;
-	}
-	xlnx_dp_phy_set_tx_voltage_swing(dp, XVPHY_CHANNEL_ID_CH1, diff_swing);
-	xlnx_dp_phy_set_tx_voltage_swing(dp, XVPHY_CHANNEL_ID_CH2, diff_swing);
-	xlnx_dp_phy_set_tx_voltage_swing(dp, XVPHY_CHANNEL_ID_CH3, diff_swing);
-	xlnx_dp_phy_set_tx_voltage_swing(dp, XVPHY_CHANNEL_ID_CH4, diff_swing);
-
 }
 
 /**
- * xlnx_dp_tx_adj_vswing_preemp - This function sets new voltage swing and
- * pre-emphasis levels using the adjustment requests obtained from the sink.
+ * xlnx_dp_tx_adj_vswing_preemp - Sets voltage swing and pre-emphasis levels
+ * @dp:Pointer to xlnx_dp structure
+ * @link_status: An array of link status register
  *
- * @param	Ptr is a pointer to the xlnx_dp instance.
- * @link_status an array of link status register
- * @return
- * zero if the new levels were written successfully.
+ * This function sets new voltage swing and pre-emphasis levels using the
+ * adjustment requests obtained from the sink.
+ *
+ * Return: 0 if the new levels were written successfully.
  * error value on failure.
  */
-static u32 xlnx_dp_tx_adj_vswing_preemp(struct xlnx_dp *dp, u8 link_status[6])
+static int xlnx_dp_tx_adj_vswing_preemp(struct xlnx_dp *dp, u8 link_status[6])
 {
-	u32 ret;
-	u8 index, aux_data[4];
+	struct phy_configure_opts_dp *phy_cfg = &dp->phy_opts.dp;
+	int ret;
+	u8 i, aux_data[4];
 	u8 vs_level_adj_req[4];
 	u8 pe_level_adj_req[4];
+	u8 max_lanes = dp->link_config.max_lanes;
 
-	/* Analyze the adjustment requests for changes in voltage swing and
+	/*
+	 * Analyze the adjustment requests for changes in voltage swing and
 	 * pre-emphasis levels.
 	 */
-	vs_level_adj_req[0] = link_status[4] & XDP_DPCD_ADJ_REQ_LANE_0_2_VS_MASK;
-	vs_level_adj_req[1] = (link_status[4] &
-				XDP_DPCD_ADJ_REQ_LANE_1_3_VS_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_1_3_VS_SHIFT;
-	vs_level_adj_req[2] = link_status[5] & XDP_DPCD_ADJ_REQ_LANE_0_2_VS_MASK;
-	vs_level_adj_req[3] = (link_status[5] &
-				XDP_DPCD_ADJ_REQ_LANE_1_3_VS_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_1_3_VS_SHIFT;
-	pe_level_adj_req[0] = (link_status[4] &
-				XDP_DPCD_ADJ_REQ_LANE_0_2_PE_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_0_2_PE_SHIFT;
-	pe_level_adj_req[1] = (link_status[4] &
-				XDP_DPCD_ADJ_REQ_LANE_1_3_PE_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_1_3_PE_SHIFT;
-	pe_level_adj_req[2] = (link_status[5] &
-				XDP_DPCD_ADJ_REQ_LANE_0_2_PE_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_0_2_PE_SHIFT;
-	pe_level_adj_req[3] = (link_status[5] &
-				XDP_DPCD_ADJ_REQ_LANE_1_3_PE_MASK) >>
-				XDP_DPCD_ADJ_REQ_LANE_1_3_PE_SHIFT;
+	vs_level_adj_req[0] = FIELD_GET(DP_ADJUST_VOLTAGE_SWING_LANE0_MASK,
+					link_status[4]);
+	vs_level_adj_req[1] = FIELD_GET(DP_ADJUST_VOLTAGE_SWING_LANE1_MASK,
+					link_status[4]);
+	vs_level_adj_req[2] = FIELD_GET(DP_ADJUST_VOLTAGE_SWING_LANE0_MASK,
+					link_status[5]);
+	vs_level_adj_req[3] = FIELD_GET(DP_ADJUST_VOLTAGE_SWING_LANE1_MASK,
+					link_status[5]);
+	pe_level_adj_req[0] = FIELD_GET(DP_ADJUST_PRE_EMPHASIS_LANE0_MASK,
+					link_status[4]);
+	pe_level_adj_req[1] = FIELD_GET(DP_ADJUST_PRE_EMPHASIS_LANE1_MASK,
+					link_status[4]);
+	pe_level_adj_req[2] = FIELD_GET(DP_ADJUST_PRE_EMPHASIS_LANE0_MASK,
+					link_status[5]);
+	pe_level_adj_req[3] = FIELD_GET(DP_ADJUST_PRE_EMPHASIS_LANE1_MASK,
+					link_status[5]);
 
-	/* Change the drive settings to match the adjustment requests. Use the
+	/*
+	 * change the drive settings to match the adjustment requests. Use the
 	 * greatest level requested.
 	 */
 	dp->tx_link_config.vs_level = 0;
 	dp->tx_link_config.pe_level = 0;
-	for (index = 0; index < dp->mode.lane_cnt ; index++) {
-		if (vs_level_adj_req[index] > dp->tx_link_config.vs_level)
-			dp->tx_link_config.vs_level = vs_level_adj_req[index];
-		if (pe_level_adj_req[index] > dp->tx_link_config.pe_level)
-			dp->tx_link_config.pe_level = pe_level_adj_req[index];
+	for (i = 0; i < dp->mode.lane_cnt ; i++) {
+		if (vs_level_adj_req[i] > dp->tx_link_config.vs_level)
+			dp->tx_link_config.vs_level = vs_level_adj_req[i];
+		if (pe_level_adj_req[i] > dp->tx_link_config.pe_level)
+			dp->tx_link_config.pe_level = pe_level_adj_req[i];
 	}
 
-	/* Verify that the voltage swing and pre-emphasis combination is
+	/*
+	 * Verify that the voltage swing and pre-emphasis combination is
 	 * allowed. Some combinations will result in differential peak-to-peak
 	 * voltage that is outside the permissible range. See the VESA
-	 * DisplayPort v1.4 Specification.
+	 * DisplayPort v1.4 Specification, section 3.1.5.2.
 	 * The valid combinations are:
-	 * PE=0    PE=1    PE=2    PE=3
+	 *      PE=0    PE=1    PE=2    PE=3
 	 * VS=0 Valid   Valid   Valid   Valid
 	 * VS=1 Valid   Valid   Valid
 	 * VS=2 Valid   Valid
 	 * VS=3 Valid
 	 */
-	if (dp->tx_link_config.pe_level > (4 - dp->tx_link_config.vs_level)) {
+	if (dp->tx_link_config.pe_level > (4 - dp->tx_link_config.vs_level))
 		dp->tx_link_config.pe_level = 4 - dp->tx_link_config.vs_level;
-	}
-	/* Make the adjustments to both the DisplayPort TX core and the RX
+
+	/*
+	 * Make the adjustments to both the DisplayPort TX core and the RX
 	 * device.
 	 */
 	xlnx_dp_tx_set_vswing_preemp(dp, aux_data);
-	/* Write the voltage swing and pre-emphasis levels for each lane to the
+	/*
+	 * Write the voltage swing and pre-emphasis levels for each lane to the
 	 * RX device.
 	 */
 	ret = drm_dp_dpcd_write(&dp->aux, DP_TRAINING_LANE0_SET,
-					&aux_data[0], 4);
+				&aux_data[0], 1);
 	if (ret < 0)
 		return ret;
 
-	xlnx_dp_pt_pe_vs_adjust_handler(dp);
+	phy_cfg->lanes = max_lanes;
+	phy_cfg->pre[0] = dp->tx_link_config.pe_level;
+	phy_cfg->voltage[0] = dp->tx_link_config.vs_level;
+	phy_cfg->set_voltages = 1;
+
+	phy_configure(dp->phy[0], &dp->phy_opts);
 
 	return 0;
-}
-
-/**
- * xlnx_dp_tx_set_vswing_preemp - This function sets current voltage swing and
- * pre-emphasis level settings from the LinkConfig structure to hardware.
- *
- * @dp		pointer to the xlnx_dp instance.
- * @aux_data	AuxData is a pointer to the array used for preparing a burst
- *		write over the AUX channel.
- *
- *
- */
-static void xlnx_dp_tx_set_vswing_preemp(struct xlnx_dp *dp, u8 *aux_data)
-{
-	u8 data, vs_level_rx = dp->tx_link_config.vs_level;
-	u8 index, pe_level_rx = dp->tx_link_config.pe_level;
-	u32 pe_level, vs_level;
-
-	pe_level = dp->tx_link_config.tx_pe_levels[pe_level_rx];
-	vs_level = dp->tx_link_config.tx_vs_levels[vs_level_rx];
-
-	/* Need to compensate due to no redriver in the path. */
-	if (pe_level_rx != 0)
-		vs_level += dp->tx_link_config.tx_vs_offset;
-
-	/* Set up the data buffer for writing to the RX device. */
-	data = (pe_level_rx << XDP_DPCD_TRAINING_LANEX_SET_PE_SHIFT) |
-		vs_level_rx;
-	/* The maximum voltage swing has been reached. */
-	if (vs_level_rx == XDP_TX_MAXIMUM_VS_LEVEL)
-		data |= XDP_DPCD_TRAINING_LANEX_SET_MAX_VS_MASK;
-	/* The maximum pre-emphasis level has been reached. */
-	if (pe_level_rx == XDP_TX_MAXIMUM_PE_LEVEL)
-		data |= XDP_DPCD_TRAINING_LANEX_SET_MAX_PE_MASK;
-	memset(aux_data, data, 4);
-
-	for (index = 0; index < 4; index++) {
-		/* Disable pre-cursor levels. */
-		xlnx_dp_write(dp->iomem,
-				XDP_TX_PHY_PRECURSOR_LANE_0 + 4 * index, 0x0);
-		/* Write new voltage swing levels to the TX registers. */
-		xlnx_dp_write(dp->iomem,
-				XDP_TX_PHY_VOLTAGE_DIFF_LANE_0 + (4 * index),
-				vs_level);
-		/* Write new pre-emphasis levels to the TX registers. */
-		xlnx_dp_write(dp->iomem,
-				XDP_TX_PHY_POSTCURSOR_LANE_0 + 4 * index,
-				pe_level);
-	}
 }
 
 /**
@@ -1270,75 +807,78 @@ static void xlnx_dp_tx_set_vswing_preemp(struct xlnx_dp *dp, u8 *aux_data)
  *
  * Return: 0 if clock recovery train is done successfully, or corresponding
  * error code.
- *
  */
 static int xlnx_dp_link_train_cr(struct xlnx_dp *dp)
 {
-	u8 PrevVsLevel = 0;
-	u8 SameVsLevelCount = 0;
-	u8 AuxData[5];
-	u8 *auxdata = &AuxData[0];
+	u8 prev_vs_level = 0;
+	u8 same_vs_level_count = 0;
+	u8 aux_data;
+	u16 max_tries;
 	u8 link_status[DP_LINK_STATUS_SIZE];
 	u8 lane_cnt = dp->mode.lane_cnt;
 	bool cr_done = 0;
 	int ret;
+	struct xlnx_dp_tx_link_config *link_config = &dp->tx_link_config;
 
-	struct xlnx_dp_tx_link_config *LinkConfig = &dp->tx_link_config;
-	/* Start from minimal voltage swing and pre-emphasis levels. */
 	dp->tx_link_config.vs_level = 0;
 	dp->tx_link_config.pe_level = 0;
 
-	/* Transmit training pattern 1. */
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_TRAINING_PATTERN_SET,
-			DP_TRAINING_PATTERN_1);
-	/* Disable the scrambler. */
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_SCRAMBLING_DISABLE, 1);
-	AuxData[0] = DP_TRAINING_PATTERN_1 | DP_LINK_SCRAMBLING_DISABLE;
-
-	xlnx_dp_tx_set_vswing_preemp(dp, &AuxData[1]);
-	ret = drm_dp_dpcd_write(&dp->aux, DP_TRAINING_PATTERN_SET,
-				&AuxData[0], 5);
+	xlnx_dp_write(dp->dp_base, XDPTX_TRNGPAT_SET_REG,
+		      DP_TRAINING_PATTERN_1);
+	xlnx_dp_write(dp->dp_base, XDPTX_SCRAMBLING_DIS_REG, 1);
+	aux_data = DP_TRAINING_PATTERN_1 | DP_LINK_SCRAMBLING_DISABLE;
+	ret = drm_dp_dpcd_writeb(&dp->aux, DP_TRAINING_PATTERN_SET, aux_data);
 	if (ret < 0)
 		return ret;
 
-	while (1) {
-		/* Obtain the required delay for clock recovery as specified
+	/*
+	 * 256 loops should be maximum iterations for 4 lanes and 4 values.
+	 * So, This loop should exit before 512 iterations
+	 */
+	for (max_tries = 0; max_tries < 512; max_tries++) {
+		/*
+		 * Obtain the required delay for clock recovery as specified
 		 * by the RX device.
+		 * Wait delay specified in TRAINING_AUX_RD_INTERVAL(0x0E)
 		 */
-		/* Wait delay specified in TRAINING_AUX_RD_INTERVAL(0x0E) */
 		drm_dp_link_train_clock_recovery_delay(dp->dpcd);
-		/* Check if all lanes have realized and maintained the
+		/*
+		 * check if all lanes have realized and maintained the
 		 * frequency lock and get adjustment requests.
 		 */
 		ret = drm_dp_dpcd_read_link_status(&dp->aux, link_status);
+		if (ret < 0)
+			return ret;
 		cr_done = drm_dp_clock_recovery_ok(link_status, lane_cnt);
 		if (cr_done)
 			break;
-		/* Check if the same voltage swing for each lane has been
+		/*
+		 * check if the same voltage swing for each lane has been
 		 * used 5 consecutive times.
 		 */
-		if (PrevVsLevel == LinkConfig->vs_level)
-			SameVsLevelCount++;
-		else {
-			SameVsLevelCount = 0;
-			PrevVsLevel = LinkConfig->vs_level;
+		if (prev_vs_level == link_config->vs_level) {
+			same_vs_level_count++;
+		} else {
+			same_vs_level_count = 0;
+			prev_vs_level = link_config->vs_level;
 		}
-		if (SameVsLevelCount >= 5)
-			break;
-		/* Only try maximum voltage swing once. */
-		if (LinkConfig->vs_level == XDP_TX_MAXIMUM_VS_LEVEL)
+
+		if (same_vs_level_count == XDPTX_VS_LEVEL_MAXCOUNT)
 			break;
 
-		/* Adjust the drive settings as requested by the RX device. */
+		if (link_config->vs_level == XDPTX_VS_PE_LEVEL_MAXCOUNT)
+			break;
+
 		ret = xlnx_dp_tx_adj_vswing_preemp(dp, link_status);
 		if (ret < 0)
 			return ret;
 	}
-	if (cr_done)
-		return 0;
+	if (!cr_done) {
+		dev_err(dp->dev, "training cr failed\n");
+		return -ETIMEDOUT;
+	}
 
-	printk("training cr failed \n");
-	return -1;
+	return 0;
 }
 
 /**
@@ -1351,81 +891,76 @@ static int xlnx_dp_link_train_cr(struct xlnx_dp *dp)
 
 static int xlnx_dp_link_train_ce(struct xlnx_dp *dp)
 {
-
-	u32 ret = 0;
-	u32 IterationCount = 0;
+	int ret;
 	u8 pat;
+	u32 i;
 	u8 link_status[DP_LINK_STATUS_SIZE];
 	u8 lane_cnt = dp->mode.lane_cnt;
-	u8 AuxData[5];
+	u8 aux_data[5];
 	bool ce_done;
 
-	if (dp->dpcd[DP_DPCD_REV] == DP_V1_4 &&
-		dp->dpcd[DP_MAX_DOWNSPREAD] & DP_TPS4_SUPPORTED){
+	if (dp->dpcd[DP_DPCD_REV] == XDPTX_V1_4 &&
+	    dp->dpcd[DP_MAX_DOWNSPREAD] & DP_TPS4_SUPPORTED) {
 		pat = DP_TRAINING_PATTERN_4;
-	} else if (dp->dpcd[DP_DPCD_REV] >= DP_V1_2 &&
-			dp->dpcd[DP_MAX_LANE_COUNT] & DP_TPS3_SUPPORTED)
-			pat = DP_TRAINING_PATTERN_3;
-	else
-		pat = DP_TRAINING_PATTERN_2;
-
-	/* Write to the DisplayPort TX core. Transmit training pattern 2/3/4*/
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_TRAINING_PATTERN_SET, pat);
-
-	/* Enable/Discable the scrambler based on DP version */
-	if (dp->dpcd[DP_DPCD_REV] == DP_V1_4) {
-		xlnx_dp_write(dp->iomem, XLNX_DP_TX_SCRAMBLING_DISABLE, 0);
-		AuxData[0] = DP_TRAINING_PATTERN_4;
+	} else if (dp->dpcd[DP_DPCD_REV] >= XDPTX_V1_2 &&
+		dp->dpcd[DP_MAX_LANE_COUNT] & DP_TPS3_SUPPORTED) {
+		pat = DP_TRAINING_PATTERN_3;
 	} else {
-		xlnx_dp_write(dp->iomem, XLNX_DP_TX_SCRAMBLING_DISABLE, 1);
-		AuxData[0] = pat | DP_LINK_SCRAMBLING_DISABLE;
+		pat = DP_TRAINING_PATTERN_2;
 	}
-	xlnx_dp_tx_set_vswing_preemp(dp, &AuxData[1]);
+
+	xlnx_dp_write(dp->dp_base, XDPTX_TRNGPAT_SET_REG, pat);
+
+	if (dp->dpcd[DP_DPCD_REV] == XDPTX_V1_4) {
+		xlnx_dp_write(dp->dp_base, XDPTX_SCRAMBLING_DIS_REG, 0);
+		aux_data[0] = DP_TRAINING_PATTERN_4;
+	} else {
+		xlnx_dp_write(dp->dp_base, XDPTX_SCRAMBLING_DIS_REG, 1);
+		aux_data[0] = pat | DP_LINK_SCRAMBLING_DISABLE;
+	}
+	xlnx_dp_tx_set_vswing_preemp(dp, &aux_data[1]);
 	ret = drm_dp_dpcd_write(&dp->aux, DP_TRAINING_PATTERN_SET,
-					&AuxData[0], 5);
+				&aux_data[0], 5);
 	if (ret < 0)
 		return ret;
 
-	while (IterationCount < 8) {
-
-		/* Obtain the required delay for channel equalization as
+	for (i = 0; i < 8; i++) {
+		/*
+		 * Obtain the required delay for channel equalization as
 		 * specified by the RX device.
 		 */
-
-		/* Wait delay specified in TRAINING_AUX_RD_INTERVAL. */
 		drm_dp_link_train_channel_eq_delay(dp->dpcd);
 
-		/* Check that all lanes still have their clocks locked. */
 		ret = drm_dp_dpcd_read_link_status(&dp->aux, link_status);
 		if (ret < 0)
 			return ret;
 
-		/* Check if all lanes have accomplished channel equalization,
+		/*
+		 * check if all lanes have accomplished channel equalization,
 		 * symbol lock, and interlane alignment.
 		 */
 		ce_done = drm_dp_channel_eq_ok(link_status, lane_cnt);
 		if (ce_done)
 			break;
 
-		/* Check that all lanes still have their clocks locked. */
 		ret = drm_dp_dpcd_read_link_status(&dp->aux, link_status);
 		if (ret < 0)
 			return ret;
 
-		/* Adjust the drive settings as requested by the RX device. */
 		ret = xlnx_dp_tx_adj_vswing_preemp(dp, link_status);
 		if (ret != 0)
 			return ret;
-		IterationCount++;
 	}
-	/* Tried 8 times with no success. Try a reduced bitrate first, then
+	/*
+	 * Tried 8 times with no success. Try a reduced bitrate first, then
 	 * reduce the number of lanes.
 	 */
-	if (ce_done)
-		return 0;
+	if (!ce_done) {
+		dev_err(dp->dev, "training ce failed\n");
+		return -ETIMEDOUT;
+	}
 
-	printk("train ce failed\n");
-	return -1;
+	return 0;
 }
 
 /**
@@ -1439,68 +974,69 @@ static int xlnx_dp_train(struct xlnx_dp *dp)
 	u32 reg;
 	u8 bw_code = dp->mode.bw_code;
 	u8 lane_cnt = dp->mode.lane_cnt;
-	u8 aux_read, aux_lane_cnt = lane_cnt;
-	u8 Data;
-	u8 relink_status[DP_LINK_STATUS_SIZE];
+	u8 aux_lane_cnt = lane_cnt;
+	u8 data;
 	bool enhanced;
 	int ret;
 
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_LANE_CNT_SET, lane_cnt);
-	ret = drm_dp_dpcd_readb(&dp->aux, DP_MAX_LANE_COUNT, &aux_read);
-	if (aux_read & (1 << 7)) {
-		xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENHANCED_FRAME_EN, 1);
+	xlnx_dp_write(dp->dp_base, XDPTX_LANECNT_SET_REG, lane_cnt);
+	enhanced = drm_dp_enhanced_frame_cap(dp->dpcd);
+	if (enhanced) {
+		xlnx_dp_write(dp->dp_base, XDPTX_EFRAME_EN_REG, 1);
 		aux_lane_cnt |= DP_LANE_COUNT_ENHANCED_FRAME_EN;
 	}
+
 	if (dp->dpcd[3] & 0x1) {
-		xlnx_dp_write(dp->iomem, XLNX_DP_TX_DOWNSPREAD_CTL, 1);
-		drm_dp_dpcd_writeb(&dp->aux, DP_DOWNSPREAD_CTRL,
-					DP_SPREAD_AMP_0_5);
+		xlnx_dp_write(dp->dp_base, XDPTX_DOWNSPREAD_CTL_REG, 1);
+		drm_dp_dpcd_writeb(&dp->aux, DP_MAX_DOWNSPREAD,
+				   DP_MAX_DOWNSPREAD_0_5);
 	} else {
-		xlnx_dp_write(dp->iomem, XLNX_DP_TX_DOWNSPREAD_CTL, 0);
+		xlnx_dp_write(dp->dp_base, XDPTX_DOWNSPREAD_CTL_REG, 0);
 		drm_dp_dpcd_writeb(&dp->aux, DP_DOWNSPREAD_CTRL, 0);
 	}
+
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_LANE_COUNT_SET, aux_lane_cnt);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to set lane count\n");
 		return ret;
 	}
+
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_MAIN_LINK_CHANNEL_CODING_SET,
-					DP_SET_ANSI_8B10B);
+				 DP_SET_ANSI_8B10B);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to set ANSI 8B/10B encoding\n");
 		return ret;
 	}
-	enhanced = drm_dp_dpcd_readb(&dp->aux, DP_MAX_LANE_COUNT, &aux_read);
+
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_LINK_BW_SET, bw_code);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to set DP bandwidth\n");
 		return ret;
 	}
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_LINK_BW_SET, bw_code);
+	xlnx_dp_write(dp->dp_base, XDPTX_LINKBW_SET_REG, bw_code);
 
 	switch (bw_code) {
 	case DP_LINK_BW_1_62:
-		reg = XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_162;
+		reg = XDPTX_PHYCLOCK_FBSETTING162_MASK;
 		break;
 	case DP_LINK_BW_2_7:
-		reg = XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_270;
+		reg = XDPTX_PHYCLOCK_FBSETTING270_MASK;
 		break;
 	case DP_LINK_BW_5_4:
-		reg = XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_540;
-		break;
+		/* fall-through */
 	case DP_LINK_BW_8_1:
-		reg = XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_810;
+		reg = XDPTX_PHYCLOCK_FBSETTING810_MASK;
 		break;
 	default:
-		reg = XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_810;
-		break;
+		reg = XDPTX_PHYCLOCK_FBSETTING810_MASK;
 	}
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING,
-			reg);
+	xlnx_dp_write(dp->dp_base, XDPTX_PHYCLOCK_FBSETTING_REG,
+		      reg);
 	ret = xlnx_dp_phy_ready(dp);
 	if (ret < 0)
 		return ret;
-	memset(dp->train_set, 0, 4);
+
+	memset(dp->train_set, 0, XDPTX_MAX_LANES);
 	ret = xlnx_dp_link_train_cr(dp);
 	if (ret)
 		return ret;
@@ -1508,31 +1044,49 @@ static int xlnx_dp_train(struct xlnx_dp *dp)
 	ret = xlnx_dp_link_train_ce(dp);
 	if (ret)
 		return ret;
-	if (dp->dpcd[DP_DPCD_REV] == DP_V1_4) {
-		ret = drm_dp_dpcd_readb(&dp->aux, DP_LANE_COUNT_SET, &Data);
-		if (ret < 0)
-			dev_info(dp->dev, "aux read failed\n");
-		Data = Data | 0x20;
-		ret = drm_dp_dpcd_writeb(&dp->aux, DP_LANE_COUNT_SET, Data);
-		if (ret < 0)
-			dev_info(dp->dev, "aux read failed\n");
-	}
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_SCRAMBLING_DISABLE, 0);
-	/* Check channel equalization, symbol lock, and interlane alignment.*/
-	ret = drm_dp_channel_eq_ok(relink_status, lane_cnt);
-	if (!ret)
-		dev_info(dp->dev, "connection recheck failed\n");
 
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_TRAINING_PATTERN_SET,
-			DP_TRAINING_PATTERN_DISABLE);
+	if (dp->dpcd[DP_DPCD_REV] == XDPTX_V1_4) {
+		ret = drm_dp_dpcd_readb(&dp->aux, DP_LANE_COUNT_SET, &data);
+		if (ret < 0) {
+			dev_dbg(dp->dev, "DPCD read first try fails");
+			ret = drm_dp_dpcd_readb(&dp->aux,
+						DP_LANE_COUNT_SET, &data);
+			if (ret < 0) {
+				dev_err(dp->dev, "DPCD read retry fails");
+				return ret;
+			}
+		}
+
+		/*
+		 * Post Link Training ; An upstream device with a DPTX sets
+		 * this bit to 1 to grant the POST_LT_ADJ_REQ sequence by the
+		 * downstream DPRX if the downstream DPRX supports
+		 * POST_LT_ADJ_REQ
+		 */
+		data |= 0x20;
+		ret = drm_dp_dpcd_writeb(&dp->aux, DP_LANE_COUNT_SET, data);
+		if (ret < 0) {
+			dev_dbg(dp->dev, "DPCD write first try fails");
+			ret = drm_dp_dpcd_writeb(&dp->aux,
+						 DP_LANE_COUNT_SET, data);
+			if (ret < 0) {
+				dev_err(dp->dev, "DPCD write retry fails");
+				return ret;
+			}
+		}
+	}
+	xlnx_dp_write(dp->dp_base, XDPTX_SCRAMBLING_DIS_REG, 0);
+
+	xlnx_dp_write(dp->dp_base, XDPTX_TRNGPAT_SET_REG,
+		      DP_TRAINING_PATTERN_DISABLE);
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_TRAINING_PATTERN_SET,
-					DP_TRAINING_PATTERN_DISABLE);
+				 DP_TRAINING_PATTERN_DISABLE);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to disable training pattern\n");
 		return ret;
 	}
-	/* Reset the scrambler.*/
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_SCRAMBLING_DISABLE, 0);
+	/* Disable the scrambler.*/
+	xlnx_dp_write(dp->dp_base, XDPTX_SCRAMBLING_DIS_REG, 0);
 
 	return 0;
 }
@@ -1559,18 +1113,13 @@ static void xlnx_dp_train_loop(struct xlnx_dp *dp)
 		ret = xlnx_dp_mode_configure(dp, mode->pclock, bw);
 		if (ret < 0)
 			goto err_out;
+
 		bw = ret;
 	} while (bw >= DP_LINK_BW_1_62);
 
 err_out:
 	dev_err(dp->dev, "failed to train the DP link\n");
 }
-
-/*
- * DP Aux functions
- */
-
-#define AUX_READ_BIT	0x1
 
 /**
  * xlnx_dp_aux_cmd_submit - Submit aux command
@@ -1595,56 +1144,56 @@ err_out:
  * -EIO when received bytes are less than requested
  */
 static int xlnx_dp_aux_cmd_submit(struct xlnx_dp *dp, u32 cmd, u16 addr,
-				    u8 *buf, u8 bytes, u8 *reply)
+				  u8 *buf, u8 bytes, u8 *reply)
 {
-	bool is_read = (cmd & AUX_READ_BIT) ? true : false;
-	void __iomem *iomem = dp->iomem;
+	bool is_read = (cmd & XDPTX_AUX_READ_BIT) ? true : false;
+	void __iomem *dp_base = dp->dp_base;
 	u32 reg, i;
 
-	reg = xlnx_dp_read(iomem, XLNX_DP_TX_INTR_SIGNAL_STATE);
-	if (reg & XLNX_DP_TX_INTR_SIGNAL_STATE_REQUEST)
+	reg = xlnx_dp_read(dp_base, XDPTX_INTR_SIGSTATE_REG);
+	if (reg & XDPTX_INTR_SIGREQSTATE)
 		return -EBUSY;
 
-	xlnx_dp_write(iomem, XLNX_DP_TX_AUX_ADDRESS, addr);
-	if (!is_read)
-		for (i = 0; i < bytes; i++)
-			xlnx_dp_write(iomem, XLNX_DP_TX_AUX_WRITE_FIFO,
-					buf[i]);
+	xlnx_dp_write(dp_base, XDPTX_AUX_ADDR_REG, addr);
+	if (!is_read) {
+		for (i = 0; i < bytes; i++) {
+			xlnx_dp_write(dp_base, XDPTX_AUX_WRITEFIFO_REG,
+				      buf[i]);
+		}
+	}
 
-	reg = cmd << XLNX_DP_TX_AUX_COMMAND_CMD_SHIFT;
+	reg = cmd << XDPTX_AUXCMD_SHIFT;
 	if (!buf || !bytes)
-		reg |= XLNX_DP_TX_AUX_COMMAND_ADDRESS_ONLY;
+		reg |= XDPTX_AUXCMD_ADDRONLY_MASK;
 	else
-		reg |= (bytes - 1) << XLNX_DP_TX_AUX_COMMAND_BYTES_SHIFT;
-	xlnx_dp_write(iomem, XLNX_DP_TX_AUX_COMMAND, reg);
+		reg |= (bytes - 1) << XDPTX_AUXCMD_BYTES_SHIFT;
+	xlnx_dp_write(dp_base, XDPTX_AUXCMD_REG, reg);
 
 	/* Wait for reply to be delivered upto 2ms */
 	for (i = 0; ; i++) {
-		reg = xlnx_dp_read(iomem, XLNX_DP_TX_INTR_SIGNAL_STATE);
-		if (reg & XLNX_DP_TX_INTR_SIGNAL_STATE_REPLY)
+		reg = xlnx_dp_read(dp_base, XDPTX_INTR_SIGSTATE_REG);
+		if (reg & XDPTX_INTR_SIGRPLYSTATE)
 			break;
 
-		if (reg & XLNX_DP_TX_INTR_SIGNAL_STATE_REPLY_TIMEOUT ||
+		if (reg & XDPTX_INTR_RPLYTIMEOUT ||
 		    i == 2)
 			return -ETIMEDOUT;
 
 		usleep_range(1000, 1100);
 	}
 
-	reg = xlnx_dp_read(iomem, XLNX_DP_TX_AUX_REPLY_CODE);
+	reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_CODE_REG);
 	if (reply)
 		*reply = reg;
 
-	if (is_read &&
-	    (reg == XLNX_DP_TX_AUX_REPLY_CODE_AUX_ACK ||
-	     reg == XLNX_DP_TX_AUX_REPLY_CODE_I2C_ACK)) {
-		reg = xlnx_dp_read(iomem, XLNX_DP_TX_REPLY_DATA_CNT);
-		if ((reg & XLNX_DP_TX_AUX_REPLY_CNT_MASK) != bytes)
+	if (is_read && !reg) {
+		reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_DATACNT_REG);
+		if ((reg & XDPTX_AUXREPLY_DATACNT_MASK) != bytes)
 			return -EIO;
 
 		for (i = 0; i < bytes; i++) {
-			buf[i] = xlnx_dp_read(iomem,
-						XLNX_DP_TX_AUX_REPLY_DATA);
+			buf[i] = xlnx_dp_read(dp_base,
+					      XDPTX_AUXREPLY_DATA_REG);
 		}
 	}
 
@@ -1658,13 +1207,12 @@ xlnx_dp_aux_transfer(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg)
 	int ret;
 	unsigned int i, iter;
 
-	/* Number of loops = timeout in msec / aux delay (400 usec) */
-	iter = xlnx_dp_aux_timeout_ms * 1000 / 400;
-	iter = iter ? iter : 1;
+	/* This is to iterate at least 50 msec */
+	iter = 50 * 1000 / 400;
 
 	for (i = 0; i < iter; i++) {
 		ret = xlnx_dp_aux_cmd_submit(dp, msg->request, msg->address,
-					       msg->buffer, msg->size,
+					     msg->buffer, msg->size,
 					       &msg->reply);
 		if (!ret) {
 			dev_dbg(dp->dev, "aux %d retries\n", i);
@@ -1679,7 +1227,7 @@ xlnx_dp_aux_transfer(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg)
 		usleep_range(400, 500);
 	}
 
-	dev_info(dp->dev, "fail aux transfer (%d)iteration =%d\n", ret, iter);
+	dev_info(dp->dev, "failed aux transfer\n");
 
 	return ret;
 }
@@ -1700,7 +1248,7 @@ static int xlnx_dp_init_aux(struct xlnx_dp *dp)
 	u32 reg, w;
 
 	rate = clk_get_rate(dp->axi_lite_clk);
-	if (rate < XLNX_DP_TX_CLK_DIVIDER_MHZ) {
+	if (rate < XDPTX_CLKDIV_MHZ) {
 		dev_err(dp->dev, "aclk should be higher than 1MHz\n");
 		return -EINVAL;
 	}
@@ -1717,11 +1265,11 @@ static int xlnx_dp_init_aux(struct xlnx_dp *dp)
 		dev_err(dp->dev, "aclk frequency too high\n");
 		return -EINVAL;
 	}
-	reg = w << XLNX_DP_TX_CLK_DIVIDER_AUX_FILTER_SHIFT;
-	reg |= rate / XLNX_DP_TX_CLK_DIVIDER_MHZ;
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_CLK_DIVIDER, reg);
+	reg = w << XDPTX_CLKDIV_AUXFILTER_SHIFT;
+	reg |= rate / XDPTX_CLKDIV_MHZ;
+	xlnx_dp_write(dp->dp_base, XDPTX_CLKDIV_REG, reg);
 
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENABLE, 1);
+	xlnx_dp_write(dp->dp_base, XDPTX_ENABLE_REG, 1);
 	return 0;
 }
 
@@ -1734,13 +1282,9 @@ static int xlnx_dp_init_aux(struct xlnx_dp *dp)
  */
 static void xlnx_dp_exit_aux(struct xlnx_dp *dp)
 {
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENABLE, 0);
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_INTR_MASK, 0xFFF);
+	xlnx_dp_write(dp->dp_base, XDPTX_ENABLE_REG, 0);
+	xlnx_dp_write(dp->dp_base, XDPTX_INTR_MASK_REG, 0xfff);
 }
-
-/*
- * Generic DP functions
- */
 
 /**
  * xlnx_dp_update_misc - Write the misc registers
@@ -1752,8 +1296,9 @@ static void xlnx_dp_exit_aux(struct xlnx_dp *dp)
 static void xlnx_dp_update_misc(struct xlnx_dp *dp)
 {
 	struct xlnx_dp_config *config = &dp->config;
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_MAIN_STREAM_MISC0, config->misc0); /*RGB24=0x20,yuv422=3A,yuv444=3C*/
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_MAIN_STREAM_MISC1, 0x0);
+
+	xlnx_dp_write(dp->dp_base, XDPTX_MAINSTRM_MISC0_REG, config->misc0);
+	xlnx_dp_write(dp->dp_base, XDPTX_MAINSTRM_MISC1_REG, 0x0);
 }
 
 /**
@@ -1769,22 +1314,9 @@ static void xlnx_dp_set_sync_mode(struct xlnx_dp *dp, bool mode)
 	struct xlnx_dp_config *config = &dp->config;
 
 	if (mode)
-		config->misc0 |= XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC;
+		config->misc0 |= XDPTX_MAINSTRM_MISC0_MASK;
 	else
-		config->misc0 &= ~XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC;
-}
-
-/**
- * xlnx_dp_get_sync_mode - Get the sync mode state
- * @dp: DisplayPort IP core structure
- *
- * Return: true if the sync mode is on, or false
- */
-static bool xlnx_dp_get_sync_mode(struct xlnx_dp *dp)
-{
-	struct xlnx_dp_config *config = &dp->config;
-
-	return !!(config->misc0 & XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC);
+		config->misc0 &= ~XDPTX_MAINSTRM_MISC0_MASK;
 }
 
 /**
@@ -1794,10 +1326,10 @@ static bool xlnx_dp_get_sync_mode(struct xlnx_dp *dp)
  *
  * Return: 0 on success, or the fallback bpc value
  */
-static u8 xlnx_dp_set_bpc(struct xlnx_dp *dp, u8 bpc)
+static u32 xlnx_dp_set_bpc(struct xlnx_dp *dp, u8 bpc)
 {
 	struct xlnx_dp_config *config = &dp->config;
-	u8 ret = 0;
+	unsigned int ret = 0;
 
 	if (dp->connector.display_info.bpc &&
 	    dp->connector.display_info.bpc != bpc) {
@@ -1806,29 +1338,28 @@ static u8 xlnx_dp_set_bpc(struct xlnx_dp *dp, u8 bpc)
 		bpc = dp->connector.display_info.bpc;
 	}
 
-	config->misc0 &= ~XLNX_DP_MISC0_BPC_MASK;
+	config->misc0 &= ~XDPTX_MISC0_BPC_MASK;
 	switch (bpc) {
 	case 6:
-		config->misc0 |= XLNX_DP_MISC0_BPC_6;
+		config->misc0 |= XDPTX_MISC0_BPC6_MASK;
 		break;
 	case 8:
-		config->misc0 |= XLNX_DP_MISC0_BPC_8;
+		config->misc0 |= XDPTX_MISC0_BPC8_MASK;
 		break;
 	case 10:
-		config->misc0 |= XLNX_DP_MISC0_BPC_10;
+		config->misc0 |= XDPTX_MISC0_BPC10_MASK;
 		break;
 	case 12:
-		config->misc0 |= XLNX_DP_MISC0_BPC_12;
+		config->misc0 |= XDPTX_MISC0_BPC12_MASK;
 		break;
 	case 16:
-		config->misc0 |= XLNX_DP_MISC0_BPC_16;
+		config->misc0 |= XDPTX_MISC0_BPC16_MASK;
 		break;
 	default:
 		dev_err(dp->dev, "Not supported bpc (%u). fall back to 8bpc\n",
 			bpc);
-		config->misc0 |= XLNX_DP_MISC0_BPC_8;
+		config->misc0 |= XDPTX_MISC0_BPC8_MASK;
 		ret = 8;
-		break;
 	}
 	config->bpc = bpc;
 	xlnx_dp_update_bpp(dp);
@@ -1837,45 +1368,32 @@ static u8 xlnx_dp_set_bpc(struct xlnx_dp *dp, u8 bpc)
 }
 
 /**
- * xlnx_dp_get_bpc - Set bpc value from software state
- * @dp: DisplayPort IP core structure
- *
- * Return: current bpc value
- */
-static u8 xlnx_dp_get_bpc(struct xlnx_dp *dp)
-{
-	return dp->config.bpc;
-}
-
-/**
  * xlnx_dp_encoder_mode_set_transfer_unit - Set the transfer unit values
  * @dp: DisplayPort IP core structure
  * @mode: requested display mode
  *
- * Set the transfer unit, and caculate all transfer unit size related values.
+ * Set the transfer unit, and calculate all transfer unit size related values.
  * Calculation is based on DP and IP core specification.
  */
 static void
 xlnx_dp_encoder_mode_set_transfer_unit(struct xlnx_dp *dp,
-					 struct drm_display_mode *mode)
+				       struct drm_display_mode *mode)
 {
-	u32 tu = XLNX_DP_TX_DEF_TRANSFER_UNIT_SIZE, temp;
+	u32 tu = XDPTX_DEF_TRANSFER_UNITSIZE, temp;
 	u32 bw, vid_kbytes, avg_bytes_per_tu, init_wait;
 
 	/* Use the max transfer unit size (default) */
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_TRANSFER_UNIT_SIZE, tu);
+	xlnx_dp_write(dp->dp_base, XDPTX_TRANSFER_UNITSIZE_REG, tu);
 
 	vid_kbytes = (mode->clock / 1000) * (dp->config.bpp / 8);
 	bw = drm_dp_bw_code_to_link_rate(dp->mode.bw_code);
-	//avg_bytes_per_tu = vid_kbytes * tu / (dp->mode.lane_cnt * bw / 1000);
 	avg_bytes_per_tu = vid_kbytes * tu / (dp->mode.lane_cnt * bw);
 
-	temp = avg_bytes_per_tu / 1000;
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_MIN_BYTES_PER_TU,
-			avg_bytes_per_tu / 1000);
+	xlnx_dp_write(dp->dp_base, XDPTX_MINBYTES_PERTU_REG,
+		      avg_bytes_per_tu / 1000);
 
 	temp = (avg_bytes_per_tu % 1000) * 1024 / 1000;
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_FRAC_BYTES_PER_TU, temp);
+	xlnx_dp_write(dp->dp_base, XDPTX_FRACBYTES_PERTU_REG, temp);
 
 	/* Configure the initial wait cycle based on transfer unit size */
 	if (tu < (avg_bytes_per_tu / 1000))
@@ -1885,7 +1403,7 @@ xlnx_dp_encoder_mode_set_transfer_unit(struct xlnx_dp *dp,
 	else
 		init_wait = tu - avg_bytes_per_tu / 1000;
 
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_INIT_WAIT, init_wait);
+	xlnx_dp_write(dp->dp_base, XDPTX_INIT_WAIT_REG, init_wait);
 }
 
 /**
@@ -1897,54 +1415,46 @@ xlnx_dp_encoder_mode_set_transfer_unit(struct xlnx_dp *dp,
  * based on IP core specification.
  */
 static void xlnx_dp_encoder_mode_set_stream(struct xlnx_dp *dp,
-				       struct drm_display_mode *mode)
+					    struct drm_display_mode *mode)
 {
-	void __iomem *iomem = dp->iomem;
+	void __iomem *dp_base = dp->dp_base;
 	u8 lane_cnt = dp->mode.lane_cnt;
 	u32 reg, wpl;
-	unsigned int temp, ppc;
+	unsigned int ppc;
 
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_HTOTAL, mode->htotal);
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_VTOTAL, mode->vtotal);
-	temp = (!!(mode->flags & DRM_MODE_FLAG_PVSYNC) <<
-			XLNX_DP_TX_MAIN_STREAM_POLARITY_VSYNC_SHIFT) |
-			(!!(mode->flags & DRM_MODE_FLAG_PHSYNC) <<
-				XLNX_DP_TX_MAIN_STREAM_POLARITY_HSYNC_SHIFT);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_HTOTAL_REG, mode->htotal);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_VTOTAL_REG, mode->vtotal);
 
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_POLARITY,
-			(!!(mode->flags & DRM_MODE_FLAG_PVSYNC) <<
-			XLNX_DP_TX_MAIN_STREAM_POLARITY_VSYNC_SHIFT) |
-			(!!(mode->flags & DRM_MODE_FLAG_PHSYNC) <<
-			XLNX_DP_TX_MAIN_STREAM_POLARITY_HSYNC_SHIFT));
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_POL_REG,
+		      (!!(mode->flags & DRM_MODE_FLAG_PVSYNC) <<
+		      XDPTX_MAINSTRM_POLVSYNC_SHIFT) |
+		      (!!(mode->flags & DRM_MODE_FLAG_PHSYNC) <<
+		      XDPTX_MAINSTRM_POLHSYNC_SHIFT));
 
-	temp = mode->hsync_end - mode->hsync_start;
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_HSWIDTH,
-			mode->hsync_end - mode->hsync_start);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_HSWIDTH_REG,
+		      mode->hsync_end - mode->hsync_start);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_VSWIDTH_REG,
+		      mode->vsync_end - mode->vsync_start);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_HRES_REG, mode->hdisplay);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_VRES_REG, mode->vdisplay);
 
-	temp = mode->vsync_end - mode->vsync_start;
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_VSWIDTH,
-			mode->vsync_end - mode->vsync_start);
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_HRES, mode->hdisplay);
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_VRES, mode->vdisplay);
-
-	temp = mode->htotal - mode->hsync_start;
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_HSTART,
-			mode->htotal - mode->hsync_start);
-	temp = mode->vtotal - mode->vsync_start;
-	xlnx_dp_write(iomem, XLNX_DP_TX_MAIN_STREAM_VSTART,
-			mode->vtotal - mode->vsync_start);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_HSTART_REG,
+		      mode->htotal - mode->hsync_start);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_VSTART_REG,
+		      mode->vtotal - mode->vsync_start);
 	xlnx_dp_update_misc(dp);
 
 	reg = drm_dp_bw_code_to_link_rate(dp->mode.bw_code);
-	xlnx_dp_write(iomem, XLNX_DP_TX_N_VID, reg);
-	xlnx_dp_write(iomem, XLNX_DP_TX_M_VID, mode->clock);
+	xlnx_dp_write(dp_base, XDPTX_N_VID_REG, reg);
+	xlnx_dp_write(dp_base, XDPTX_M_VID_REG, mode->clock);
 
-	/* In synchronous mode, set the diviers */
-	if (dp->config.misc0 & XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC) {
+	/* In synchronous mode, set the dividers */
+	if (dp->config.misc0 & XDPTX_MAINSTRM_MISC0_MASK) {
 		reg = drm_dp_bw_code_to_link_rate(dp->mode.bw_code);
-		xlnx_dp_write(iomem, XLNX_DP_TX_N_VID, reg);
-		xlnx_dp_write(iomem, XLNX_DP_TX_M_VID, mode->clock);
+		xlnx_dp_write(dp_base, XDPTX_N_VID_REG, reg);
+		xlnx_dp_write(dp_base, XDPTX_M_VID_REG, mode->clock);
 	}
+
 	if (mode->clock > 530000)
 		ppc = 4;
 	else if (mode->clock > 270000)
@@ -1952,14 +1462,13 @@ static void xlnx_dp_encoder_mode_set_stream(struct xlnx_dp *dp,
 	else
 		ppc = 1;
 
-	xlnx_dp_write(iomem, XLNX_DP_TX_USER_PIXEL_WIDTH, ppc);
+	xlnx_dp_write(dp_base, XDPTX_USER_PIXELWIDTH_REG, ppc);
 	dp->config.ppc = ppc;
 
-	/* Translate to the native 16 bit datapath based on IP core spec */
 	wpl = (mode->hdisplay * dp->config.bpp + 15) / 16;
 	reg = wpl + wpl % lane_cnt - lane_cnt;
-	xlnx_dp_write(iomem, XLNX_DP_TX_USER_DATA_CNT_PER_LANE, reg);
-	xlnx_dp_write(iomem, XLNX_DP_TX_TRANSFER_UNIT_SIZE, 0x40);
+	xlnx_dp_write(dp_base, XDPTX_USER_DATACNTPERLANE_REG, reg);
+	xlnx_dp_write(dp_base, XDPTX_TRANSFER_UNITSIZE_REG, 0x40);
 }
 
 /*
@@ -1970,6 +1479,7 @@ xlnx_dp_connector_detect(struct drm_connector *connector, bool force)
 {
 	struct xlnx_dp *dp = connector_to_dp(connector);
 	struct xlnx_dp_link_config *link_config = &dp->link_config;
+	struct phy_configure_opts_dp *phy_cfg = &dp->phy_opts.dp;
 	u32 state, i;
 	int ret;
 
@@ -1978,26 +1488,48 @@ xlnx_dp_connector_detect(struct drm_connector *connector, bool force)
 	 * get the HPD signal with some monitors.
 	 */
 	for (i = 0; i < 10; i++) {
-		state = xlnx_dp_read(dp->iomem, XLNX_DP_TX_INTR_SIGNAL_STATE);
-		if (state & XLNX_DP_TX_INTR_SIGNAL_STATE_HPD)
+		state = xlnx_dp_read(dp->dp_base, XDPTX_INTR_SIGSTATE_REG);
+		if (state & XDPTX_INTR_SIGHPDSTATE)
 			break;
 		msleep(100);
 	}
-	if (state & XLNX_DP_TX_INTR_SIGNAL_STATE_HPD) {
+	if (state & XDPTX_INTR_SIGHPDSTATE) {
 		ret = drm_dp_dpcd_read(&dp->aux, 0x0, dp->dpcd,
-					sizeof(dp->dpcd));
+				       sizeof(dp->dpcd));
 		if (ret < 0) {
 			dev_info(dp->dev, "DPCD read failes");
 			goto disconnected;
 		}
+		dp->dpcd[1] = 0x1e;
 		link_config->max_rate = min_t(int,
-						drm_dp_max_link_rate(dp->dpcd),
-						dp->config.max_link_rate);
+					      drm_dp_max_link_rate(dp->dpcd),
+					      dp->config.max_link_rate);
 		link_config->max_lanes = min_t(u8,
-						drm_dp_max_lane_count(dp->dpcd),
-						dp->config.max_lanes);
+					       drm_dp_max_lane_count(dp->dpcd),
+					       dp->config.max_lanes);
 		dp->status = connector_status_connected;
-		set_vphy(dp->dpcd[1]);
+
+		switch (dp->dpcd[1]) {
+		case DP_LINK_BW_1_62:
+			phy_cfg->link_rate = 1620;
+			break;
+		case DP_LINK_BW_2_7:
+			phy_cfg->link_rate = 2700;
+			break;
+		case DP_LINK_BW_5_4:
+			phy_cfg->link_rate = 5400;
+			break;
+		case DP_LINK_BW_8_1:
+			phy_cfg->link_rate = 8100;
+			break;
+		default:
+			dev_err(dp->dev, "invalid link rate\n");
+			break;
+		}
+
+		phy_cfg->set_rate = 1;
+		phy_cfg->lanes = link_config->max_lanes;
+		phy_configure(dp->phy[0], &dp->phy_opts);
 
 		return connector_status_connected;
 	}
@@ -2014,12 +1546,15 @@ static int xlnx_dp_connector_get_modes(struct drm_connector *connector)
 	int ret;
 
 	edid = drm_get_edid(connector, &dp->aux.ddc);
-	if (!edid)
+	if (!edid) {
+		drm_connector_update_edid_property(connector, NULL);
 		return 0;
+	}
 
 	drm_connector_update_edid_property(connector, edid);
 	ret = drm_add_edid_modes(connector, edid);
 	kfree(edid);
+
 	return ret;
 }
 
@@ -2032,7 +1567,7 @@ xlnx_dp_connector_best_encoder(struct drm_connector *connector)
 }
 
 static int xlnx_dp_connector_mode_valid(struct drm_connector *connector,
-					  struct drm_display_mode *mode)
+					struct drm_display_mode *mode)
 {
 	struct xlnx_dp *dp = connector_to_dp(connector);
 	u8 max_lanes = dp->link_config.max_lanes;
@@ -2040,15 +1575,15 @@ static int xlnx_dp_connector_mode_valid(struct drm_connector *connector,
 	int max_rate = dp->link_config.max_rate;
 	int rate;
 
-	if (mode->clock > XLNX_MAX_FREQ) {
+	if (mode->clock > XDPTX_MAX_FREQ) {
 		dev_info(dp->dev, "filtered the mode, %s,for high pixel rate\n",
-			mode->name);
+			 mode->name);
 		drm_mode_debug_printmodeline(mode);
 		return MODE_CLOCK_HIGH;
 	}
 
-	/* Check with link rate and lane count */
-	rate = xlnx_dp_max_rate(max_rate, max_lanes, bpp);
+	/* check with link rate and lane count */
+	rate = XDPTX_MAX_RATE(max_rate, max_lanes, bpp);
 	if (mode->clock > rate) {
 		dev_dbg(dp->dev, "filtered the mode, %s,for high pixel rate\n",
 			mode->name);
@@ -2068,44 +1603,44 @@ static void xlnx_dp_connector_destroy(struct drm_connector *connector)
 
 static int
 xlnx_dp_connector_atomic_set_property(struct drm_connector *connector,
-					struct drm_connector_state *state,
-					struct drm_property *property,
-					uint64_t val)
+				      struct drm_connector_state *state,
+				      struct drm_property *property,
+				      uint64_t val)
 {
 	struct xlnx_dp *dp = connector_to_dp(connector);
-	int ret;
+	unsigned int bpc;
 
-	if (property == dp->sync_prop)
+	if (property == dp->sync_prop) {
 		xlnx_dp_set_sync_mode(dp, val);
-	else if (property == dp->bpc_prop) {
-		u8 bpc;
-
+	} else if (property == dp->bpc_prop) {
 		bpc = xlnx_dp_set_bpc(dp, val);
 		if (bpc) {
 			drm_object_property_set_value(&connector->base,
-							property, bpc);
-			ret = -EINVAL;
+						      property, bpc);
+			return -EINVAL;
 		}
-	} else
+	} else {
 		return -EINVAL;
+	}
 
 	return 0;
 }
 
 static int
 xlnx_dp_connector_atomic_get_property(struct drm_connector *connector,
-					const struct drm_connector_state *state,
+				      const struct drm_connector_state *state,
 					struct drm_property *property,
 					uint64_t *val)
 {
 	struct xlnx_dp *dp = connector_to_dp(connector);
 
 	if (property == dp->sync_prop)
-		*val = xlnx_dp_get_sync_mode(dp);
+		*val = (dp->config.misc0 & XDPTX_MAINSTRM_MISC0_MASK);
 	else if (property == dp->bpc_prop)
-		*val =  xlnx_dp_get_bpc(dp);
+		*val = dp->config.bpc;
 	else
 		return -EINVAL;
+
 	return 0;
 }
 
@@ -2130,10 +1665,11 @@ static void xlnx_dp_encoder_enable(struct drm_encoder *encoder)
 {
 	struct xlnx_dp *dp = encoder_to_dp(encoder);
 	struct drm_dp_link link;
-
-	void __iomem *iomem = dp->iomem;
+	void __iomem *dp_base = dp->dp_base;
 	unsigned int i;
 	int ret = 0;
+	unsigned int xlnx_dp_power_on_delay_ms = 4;
+
 	pm_runtime_get_sync(dp->dev);
 	dp->enabled = true;
 	xlnx_dp_init_aux(dp);
@@ -2149,32 +1685,34 @@ static void xlnx_dp_encoder_enable(struct drm_encoder *encoder)
 		msleep(xlnx_dp_power_on_delay_ms);
 	}
 	if (ret < 0)
-		dev_info(dp->dev, "DP aux failed\n");
+		dev_err(dp->dev, "DP aux failed\n");
 	else
 		xlnx_dp_train_loop(dp);
 
-	xlnx_dp_write(iomem, 0xF0, 0);
-	xlnx_dp_write(iomem, 0xF0, 1);
-	xlnx_vtc_enable(dp);
-	xlnx_dp_write(iomem, XLNX_DP_TX_ENABLE_MAIN_STREAM, 1);
+	/* Enable VTC */
+	xlnx_dp_set(dp->dp_base,
+		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_GE);
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_ENABLE_REG, 1);
 }
 
 static void xlnx_dp_encoder_disable(struct drm_encoder *encoder)
 {
 	struct xlnx_dp *dp = encoder_to_dp(encoder);
-	void __iomem *iomem = dp->iomem;
+	void __iomem *dp_base = dp->dp_base;
 
+	xlnx_dp_write(dp_base, XDPTX_MAINSTRM_ENABLE_REG, 0);
 	dp->enabled = false;
 	cancel_delayed_work(&dp->hpd_work);
-	xlnx_dp_write(iomem, XLNX_DP_TX_ENABLE_MAIN_STREAM, 0);
+	/* Disable VTC */
+	xlnx_dp_clr(dp->dp_base,
+		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_GE);
 	pm_runtime_put_sync(dp->dev);
-	xlnx_vtc_disable(dp);
 }
 
 static void
 xlnx_dp_encoder_atomic_mode_set(struct drm_encoder *encoder,
-				  struct drm_crtc_state *crtc_state,
-				  struct drm_connector_state *connector_state)
+				struct drm_crtc_state *crtc_state,
+				struct drm_connector_state *connector_state)
 {
 	struct xlnx_dp *dp = encoder_to_dp(encoder);
 	struct drm_display_mode *mode = &crtc_state->mode;
@@ -2183,15 +1721,18 @@ xlnx_dp_encoder_atomic_mode_set(struct drm_encoder *encoder,
 	u8 bpp = dp->config.bpp;
 	int rate, max_rate = dp->link_config.max_rate;
 	int ret;
+	u32 clock;
 	u32 drm_fourcc;
-	struct videomode vm;
 
+	/*
+	 * This assumes that there is no conversion  between framebuffer
+	 * and DP Tx
+	 */
 	drm_fourcc = encoder->crtc->primary->state->fb->format->format;
 
-	xlnx_dp_set_color(dp,drm_fourcc);
-	
-	/* Check again as bpp or format might have been chagned */
-	rate = xlnx_dp_max_rate(max_rate, max_lanes, bpp);
+	xlnx_dp_set_color(dp, drm_fourcc);
+
+	rate = XDPTX_MAX_RATE(max_rate, max_lanes, bpp);
 	if (mode->clock > rate) {
 		dev_err(dp->dev, "the mode, %s,has too high pixel rate\n",
 			mode->name);
@@ -2201,77 +1742,13 @@ xlnx_dp_encoder_atomic_mode_set(struct drm_encoder *encoder,
 	if (ret < 0)
 		return;
 
-
 	/* The timing register should be programmed always */
 	xlnx_dp_encoder_mode_set_stream(dp, adjusted_mode);
 	xlnx_dp_encoder_mode_set_transfer_unit(dp, adjusted_mode);
+	clock = adjusted_mode->clock * 1000;
+	clk_set_rate(dp->tx_vid_clk, clock / dp->config.ppc);
 
-	vm.hactive = adjusted_mode->hdisplay / dp->config.ppc;
-	vm.hfront_porch = (adjusted_mode->hsync_start -
-				adjusted_mode->hdisplay) / dp->config.ppc;
-	vm.hback_porch = (adjusted_mode->htotal -
-				adjusted_mode->hsync_end) / dp->config.ppc;
-	vm.hsync_len = (adjusted_mode->hsync_end -
-			adjusted_mode->hsync_start) / dp->config.ppc;
-
-	vm.vactive = adjusted_mode->vdisplay;
-	vm.vfront_porch = adjusted_mode->vsync_start -
-				adjusted_mode->vdisplay;
-	vm.vback_porch = adjusted_mode->vtotal -
-				adjusted_mode->vsync_end;
-	vm.vsync_len = adjusted_mode->vsync_end -
-				adjusted_mode->vsync_start;
-	vm.flags = 0;
-	vm.pixelclock = adjusted_mode->clock * 1000;
-
-	clk_set_rate(dp->tx_vid_clk,(vm.pixelclock / dp->config.ppc));
-
-	xlnx_vtc_set_timing(dp, &vm);
-
-	/* configure remap */
-	if (dp->remap_iomem) {
-
-		/* reset the remapper before configuration */
-		remap_reset(dp);
-
-		xlnx_dp_write(dp->remap_iomem, 0x18, adjusted_mode->hdisplay);
-        	xlnx_dp_write(dp->remap_iomem, 0x10, adjusted_mode->vdisplay);
-        	xlnx_dp_write(dp->remap_iomem, 0x20, dp->config.fmt);
-        	xlnx_dp_write(dp->remap_iomem, 0x28, 4);
-        	xlnx_dp_write(dp->remap_iomem, 0x30, dp->config.ppc);
-        	xlnx_dp_write(dp->remap_iomem, 0x0, 0x80);
-        	xlnx_dp_write(dp->remap_iomem, 0x0, 0x81);
-	}
-		
-}
-
-#define XLNX_DP_MIN_H_BACKPORCH	20
-
-static int
-xlnx_dp_encoder_atomic_check(struct drm_encoder *encoder,
-			       struct drm_crtc_state *crtc_state,
-			       struct drm_connector_state *conn_state)
-{
-	struct drm_display_mode *mode = &crtc_state->mode;
-	struct drm_display_mode *adjusted_mode = &crtc_state->adjusted_mode;
-	int diff = mode->htotal - mode->hsync_end;
-
-	/*
-	 * Xilinx DP requires horizontal backporch to be greater than 12.
-	 * This limitation may not be compatible with the sink device.
-	 */
-	if (diff < XLNX_DP_MIN_H_BACKPORCH) {
-		int vrefresh = (adjusted_mode->clock * 1000) /
-				(adjusted_mode->vtotal * adjusted_mode->htotal);
-		dev_info(encoder->dev->dev, "hbackporch adjusted: %d to %d",
-				diff, XLNX_DP_MIN_H_BACKPORCH - diff);
-		diff = XLNX_DP_MIN_H_BACKPORCH - diff;
-		adjusted_mode->htotal += diff;
-		adjusted_mode->clock = adjusted_mode->vtotal *
-					adjusted_mode->htotal * vrefresh / 1000;
-	}
-
-	return 0;
+	xlnx_dp_vtc_set_timing(dp, adjusted_mode);
 }
 
 static const struct drm_encoder_funcs xlnx_dp_encoder_funcs = {
@@ -2282,7 +1759,6 @@ static const struct drm_encoder_helper_funcs xlnx_dp_encoder_helper_funcs = {
 	.enable			= xlnx_dp_encoder_enable,
 	.disable		= xlnx_dp_encoder_disable,
 	.atomic_mode_set	= xlnx_dp_encoder_atomic_mode_set,
-	.atomic_check		= xlnx_dp_encoder_atomic_check,
 };
 
 static void xlnx_dp_hpd_work_func(struct work_struct *work)
@@ -2308,11 +1784,11 @@ static int xlnx_dp_bind(struct device *dev, struct device *master, void *data)
 	struct drm_encoder *encoder = &dp->encoder;
 	struct drm_connector *connector = &dp->connector;
 	struct drm_device *drm = data;
-	int ret;
+	unsigned int ret;
 
 	encoder->possible_crtcs = 1;
 	drm_encoder_init(drm, encoder, &xlnx_dp_encoder_funcs,
-				DRM_MODE_ENCODER_TMDS, NULL);
+			 DRM_MODE_ENCODER_TMDS, NULL);
 	drm_encoder_helper_add(encoder, &xlnx_dp_encoder_helper_funcs);
 
 	connector->polled = DRM_CONNECTOR_POLL_HPD;
@@ -2334,8 +1810,7 @@ static int xlnx_dp_bind(struct device *dev, struct device *master, void *data)
 	dp->bpc_prop = drm_property_create_enum(drm, 0, "bpc",
 						xlnx_dp_bpc_enum,
 						ARRAY_SIZE(xlnx_dp_bpc_enum));
-
-	dp->config.misc0 &= ~XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC;
+	dp->config.misc0 &= ~XDPTX_MAINSTRM_MISC0_MASK;
 	drm_object_attach_property(&connector->base, dp->sync_prop, false);
 	ret = xlnx_dp_set_bpc(dp, 8);
 	drm_object_attach_property(&connector->base, dp->bpc_prop,
@@ -2358,15 +1833,16 @@ error_prop:
 	xlnx_dp_connector_destroy(&dp->connector);
 error_encoder:
 	drm_encoder_cleanup(&dp->encoder);
+
 	return ret;
 }
 
-static void xlnx_dp_unbind(struct device *dev, struct device *master, void *data)
+static void xlnx_dp_unbind(struct device *dev,
+			   struct device *master, void *data)
 {
 	struct xlnx_dp *dp = dev_get_drvdata(dev);
 
 	cancel_delayed_work_sync(&dp->hpd_work);
-	disable_irq(dp->irq);
 	xlnx_dp_exit_aux(dp);
 	drm_property_destroy(dp->drm, dp->bpc_prop);
 	drm_property_destroy(dp->drm, dp->sync_prop);
@@ -2374,54 +1850,55 @@ static void xlnx_dp_unbind(struct device *dev, struct device *master, void *data
 	drm_encoder_cleanup(&dp->encoder);
 }
 
-int xlnx_dp_istxconnected(struct xlnx_dp *dp)
+static int xlnx_dp_txconnected(struct xlnx_dp *dp)
 {
 	u32 status;
 	u8 retries = 0;
 
 	do {
-		status = xlnx_dp_read(dp->iomem,
-					XLNX_DP_TX_INTR_SIGNAL_STATE) & 0x1;
-		if (retries > 50)
-			return 0;
+		status = xlnx_dp_read(dp->dp_base,
+				      XDPTX_INTR_SIGSTATE_REG) & 0x1;
+		if (retries > 5)
+			return false;
 		retries++;
 		usleep_range(1000, 1100);
 	} while (status == 0);
 
-	return 1;
+	return true;
 }
 
 static irqreturn_t xlnx_dp_irq_handler(int irq, void *data)
 {
 	struct xlnx_dp *dp = (struct xlnx_dp *)data;
 	u32 intrstatus;
-	u32 hpdeventdetected, hpdpulsedetected;
 	u32 hpdduration;
 
 	/* Determine what kind of interrupt occurred. */
-	intrstatus = xlnx_dp_read(dp->iomem, XLNX_DP_TX_INTR_STATUS);
-	intrstatus &= ~xlnx_dp_read(dp->iomem, XLNX_DP_TX_INTR_MASK);
-	hpdeventdetected = intrstatus & XLNX_DP_TX_INTR_HPD_EVENT;
-	hpdpulsedetected = intrstatus & XLNX_DP_TX_INTR_HPD_PULSE;
+	intrstatus = xlnx_dp_read(dp->dp_base, XDPTX_INTR_STATUS_REG);
 
 	if (!intrstatus)
 		return IRQ_NONE;
-	if (hpdeventdetected)
-		dev_info(dp->dev, "hpdevent detected\n");
-	else if (hpdpulsedetected && xlnx_dp_istxconnected(dp)) {
-		hpdduration = xlnx_dp_read(dp->iomem, XLNX_DP_TX_HPD_DURATION);
+	if (intrstatus & XDPTX_INTR_HPDEVENT_MASK) {
+		dev_dbg_ratelimited(dp->dev, "hpdevent detected\n");
+	} else if (intrstatus & XDPTX_INTR_HPDPULSE_MASK &&
+		   xlnx_dp_txconnected(dp)) {
+		/*
+		 * Some monitors give HPD pulse repeatedly which cause
+		 * HPD pulse function to be executed huge number of times.
+		 * Hence HPD pulse interrupt is disabled if pulse duration
+		 * is longer than 500 microseconds.
+		 */
+		hpdduration = xlnx_dp_read(dp->dp_base, XDPTX_HPD_DURATION_REG);
 		if (hpdduration >= 500)
-			xlnx_dp_write(dp->iomem, XLNX_DP_TX_INTR_MASK, 0x10);
+			xlnx_dp_write(dp->dp_base, XDPTX_INTR_MASK_REG, 0x10);
 	}
 
-	/* dbg for diagnostic, but not much that the driver can do */
-	if (intrstatus & XLNX_DP_TX_INTR_CHBUF_UNDERFLW_MASK)
-		dev_info(dp->dev, "underflow interrupt\n");
-	if (intrstatus & XLNX_DP_TX_INTR_CHBUF_OVERFLW_MASK)
-		dev_info(dp->dev, "overflow interrupt\n");
+	if (intrstatus & XDPTX_INTR_CHBUFUNDFW_MASK)
+		dev_dbg_ratelimited(dp->dev, "underflow interrupt\n");
+	if (intrstatus & XDPTX_INTR_CHBUFOVFW_MASK)
+		dev_dbg_ratelimited(dp->dev, "overflow interrupt\n");
 
-	/* The DP vblank should be enabled with xlnx_pl_disp */
-	if (intrstatus & XLNX_DP_TX_INTR_HPD_EVENT)
+	if (intrstatus & XDPTX_INTR_HPDEVENT_MASK)
 		schedule_delayed_work(&dp->hpd_work, 0);
 
 	return IRQ_HANDLED;
@@ -2436,94 +1913,62 @@ static int xlnx_dp_parse_of(struct xlnx_dp *dp)
 {
 	struct xlnx_dp_config *config = &dp->config;
 	struct device_node *node = dp->dev->of_node;
-	const char *string;
-	u32 num_colors, bpc;
-	bool sync;
+	u32 bpc;
 	int ret;
 
 	ret = of_property_read_u32(node, "xlnx,max-lanes", &config->max_lanes);
-
 	if (ret < 0) {
 		dev_err(dp->dev, "No lane count in DT\n");
 		return ret;
 	}
 	if (config->max_lanes != 1 && config->max_lanes != 2 &&
-		config->max_lanes != 4) {
+	    config->max_lanes != 4) {
 		dev_err(dp->dev, "Invalid max lanes in DT\n");
 		return -EINVAL;
 	}
 
 	ret = of_property_read_u32(node, "xlnx,max-link-rate",
-					&config->max_link_rate);
-		
+				   &config->max_link_rate);
 	if (ret < 0) {
 		dev_err(dp->dev, "No link rate in DT\n");
 		return ret;
 	}
-
-	if (config->max_link_rate != DP_REDUCED_BIT_RATE &&
-		config->max_link_rate != DP_HIGH_BIT_RATE &&
-		config->max_link_rate != DP_HIGH_BIT_RATE2 &&
-		config->max_link_rate != DP_HIGH_BIT_RATE3) {
+	if (config->max_link_rate != XDPTX_REDUCED_BIT_RATE &&
+	    config->max_link_rate != XDPTX_HIGH_BIT_RATE_1 &&
+	    config->max_link_rate != XDPTX_HIGH_BIT_RATE_2 &&
+	    config->max_link_rate != XDPTX_HIGH_BIT_RATE_3) {
 		dev_err(dp->dev, "Invalid link rate in DT\n");
 		return -EINVAL;
 	}
 
-	sync = of_property_read_bool(node, "xlnx,sync");
-	if (sync)
-		config->misc0 |= XLNX_DP_TX_MAIN_STREAM_MISC0_SYNC;
+	xlnx_dp_set_color(dp, DRM_FORMAT_RGB888);
 
-	ret = of_property_read_string(node, "xlnx,colormetry", &string);
-	if (ret < 0) {
-		dev_err(dp->dev, "No colormetry in DT\n");
-		return ret;
-	}
-	xlnx_dp_set_color(dp,DRM_FORMAT_RGB888);
-
-	ret = of_property_read_u32(node, "xlnx,max-bpc", &config->max_bpc);
-	if (ret < 0) {
-		dev_err(dp->dev, "No max bpc in DT\n");
-		return ret;
-	}
-	if (config->max_bpc != 8 && config->max_bpc != 10 &&
-		config->max_bpc != 12 && config->max_bpc != 16) {
-		dev_err(dp->dev, "Invalid max bpc in DT\n");
-		return -EINVAL;
-	}
-	
 	ret = of_property_read_u32(node, "xlnx,bpc", &bpc);
 	if (ret < 0) {
 		dev_err(dp->dev, "No color depth(bpc) in DT\n");
 		return ret;
 	}
-	if (bpc > config->max_bpc) {
-		dev_err(dp->dev, "Invalid color depth(bpc) in DT\n");
-		return -EINVAL;
-	}
 
 	switch (bpc) {
 	case 6:
-		config->misc0 |= XLNX_DP_MISC0_BPC_6;
+		config->misc0 |= XDPTX_MISC0_BPC6_MASK;
 		break;
 	case 8:
-		config->misc0 |= XLNX_DP_MISC0_BPC_8;
+		config->misc0 |= XDPTX_MISC0_BPC8_MASK;
 		break;
 	case 10:
-		config->misc0 |= XLNX_DP_MISC0_BPC_10;
+		config->misc0 |= XDPTX_MISC0_BPC10_MASK;
 		break;
 	case 12:
-		config->misc0 |= XLNX_DP_MISC0_BPC_12;
+		config->misc0 |= XDPTX_MISC0_BPC12_MASK;
 		break;
 	case 16:
-		config->misc0 |= XLNX_DP_MISC0_BPC_16;
+		config->misc0 |= XDPTX_MISC0_BPC16_MASK;
 		break;
 	default:
 		dev_err(dp->dev, "Not supported color depth in DT\n");
 		return -EINVAL;
 	}
-	config->bpp = num_colors * bpc;
-	of_property_read_u32(node, "xlnx,max-pclock-frequency",
-				&config->max_pclock);
 
 	return 0;
 }
@@ -2532,10 +1977,7 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 {
 	struct xlnx_dp *dp;
 	struct resource *res;
-	struct device_node *node, *remap_node, *clkwiz_node;
-        void __iomem *remap_base, *clkwiz_base;
-        struct resource remap_res, clkwiz_res;
-
+	unsigned int i;
 	int irq, ret;
 
 	dp = devm_kzalloc(&pdev->dev, sizeof(*dp), GFP_KERNEL);
@@ -2546,6 +1988,13 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	dp->status = connector_status_disconnected;
 	dp->dev = &pdev->dev;
 
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dp_base");
+	dp->dp_base = devm_ioremap_resource(dp->dev, res);
+	if (IS_ERR(dp->dp_base)) {
+		dev_err(&pdev->dev, "couldn't map DisplayPort registers\n");
+		return -ENODEV;
+	}
+
 	ret = xlnx_dp_parse_of(dp);
 	if (ret < 0)
 		return ret;
@@ -2554,39 +2003,54 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	if (IS_ERR(dp->axi_lite_clk))
 		return PTR_ERR(dp->axi_lite_clk);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dp->iomem = devm_ioremap_resource(dp->dev, res);
-	if (IS_ERR(dp->iomem))
-		return PTR_ERR(dp->iomem);
+	dp->tx_vid_clk = devm_clk_get(&pdev->dev, "tx_vid_clk");
+	if (IS_ERR(dp->tx_vid_clk))
+		dev_err(dp->dev, "failed to get vid clk stream1\n");
 
 	platform_set_drvdata(pdev, dp);
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENABLE, 0);
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENABLE_MAIN_STREAM, 0);
-
-	dp->dp_phy_dev = register_dp_cb();
-	if (!dp->dp_phy_dev)
-		return -EINVAL;
+	xlnx_dp_write(dp->dp_base, XDPTX_ENABLE_REG, 0);
+	xlnx_dp_write(dp->dp_base, XDPTX_MAINSTRM_ENABLE_REG, 0);
 
 	dp->tx_link_config.vs_level = 0;
 	dp->tx_link_config.pe_level = 0;
 
+	/* acquire vphy lanes */
+	for (i = 0; i < dp->config.max_lanes; i++) {
+		char phy_name[16];
+
+		snprintf(phy_name, sizeof(phy_name), "dp-phy%d", i);
+		dp->phy[i] = devm_phy_get(dp->dev, phy_name);
+		if (IS_ERR(dp->phy[i])) {
+			ret = PTR_ERR(dp->phy[i]);
+			dp->phy[i] = NULL;
+			if (ret == -EPROBE_DEFER) {
+				dev_info(dp->dev,
+					 "xvphy not ready -EPROBE_DEFER\n");
+				return ret;
+			}
+			if (ret != -EPROBE_DEFER)
+				dev_err(dp->dev, "failed to get phy lane %s i %d, error %d\n",
+					phy_name, i, ret);
+			goto error_phy;
+		}
+	}
+
 	ret = xlnx_dp_init_phy(dp);
 	if (ret)
 		goto error_phy;
-	dp->aclk = devm_clk_get(dp->dev, "s_axi_aclk");
-	if (IS_ERR(dp->aclk))
-		return PTR_ERR(dp->aclk);
 
-	dp->reset_gpio = devm_gpiod_get(&pdev->dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(dp->reset_gpio)) {
-		ret = PTR_ERR(dp->reset_gpio);
-		if (ret == -EPROBE_DEFER)
-			dev_dbg(&pdev->dev, "No gpio probed for remapper-tx. Deferring\n");
-		else
-			dev_err(&pdev->dev, "No reset gpio info from dts for remapper-tx\n");
+	ret = clk_prepare_enable(dp->axi_lite_clk);
+	if (ret) {
+		dev_err(dp->dev, "failed to enable axi_lite_clk (%d)\n", ret);
 		return ret;
 	}
-	remap_reset(dp);
+
+	ret = clk_prepare_enable(dp->tx_vid_clk);
+	if (ret) {
+		dev_err(dp->dev, "failed to enable tx_vid_clk (%d)\n", ret);
+		goto tx_vid_clk_err;
+	}
+
 	dp->aux.name = "Xlnx DP AUX";
 	dp->aux.dev = dp->dev;
 	dp->aux.transfer = xlnx_dp_aux_transfer;
@@ -2606,51 +2070,17 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 
 	if (ret < 0)
 		goto error;
-	dp->irq = irq;
-	dp->tx_link_config.tx_vs_offset = XDP_TX_VS_LEVEL_OFFSET;
-	dp->tx_link_config.tx_vs_levels[0] = XDP_TX_VS_LEVEL_0;
-	dp->tx_link_config.tx_vs_levels[1] = XDP_TX_VS_LEVEL_1;
-	dp->tx_link_config.tx_vs_levels[2] = XDP_TX_VS_LEVEL_2;
-	dp->tx_link_config.tx_vs_levels[3] = XDP_TX_VS_LEVEL_3;
-
-	dp->tx_link_config.tx_pe_levels[0] = XDP_TX_PE_LEVEL_0;
-	dp->tx_link_config.tx_pe_levels[1] = XDP_TX_PE_LEVEL_1;
-	dp->tx_link_config.tx_pe_levels[2] = XDP_TX_PE_LEVEL_2;
-	dp->tx_link_config.tx_pe_levels[3] = XDP_TX_PE_LEVEL_3;
-
-	dp->tx_vid_clk = devm_clk_get(&pdev->dev, "tx_vid_clk_stream1");
-	if (IS_ERR(dp->tx_vid_clk))
-			dev_err(dp->dev, "failed to get vid clk stream1 \n");
-    
-	/* remap node base */ 
-	node = dp->dev->of_node;
-        remap_node = of_parse_phandle(node, "xlnx,remap-tx", 0);
-        if (!remap_node) {
-                dev_err(dp->dev, "failed to get remap_node!\n");
-                remap_base = NULL;
-        } else {
-                ret = of_address_to_resource(remap_node, 0, &remap_res);
-                if (ret) {
-                        dev_err(dp->dev, "remap resource failed: %d\n", ret);
-                        remap_base = NULL;
-                } else {
-                        remap_base = devm_ioremap_resource(dp->dev, &remap_res);
-                        if (IS_ERR(remap_base)) {
-                                dev_err(dp->dev, "remap ioremap failed\n");
-                                remap_base = NULL;
-                        }
-                }
-                of_node_put(remap_node);
-        }
-
-	dp->remap_iomem = remap_base;
-
 
 	return component_add(&pdev->dev, &xlnx_dp_component_ops);
+
+tx_vid_clk_err:
+	clk_disable_unprepare(dp->axi_lite_clk);
 error:
 	drm_dp_aux_unregister(&dp->aux);
 error_phy:
+	dev_dbg(&pdev->dev, "xdprxss_probe() error_phy:\n");
 	xlnx_dp_exit_phy(dp);
+
 	return ret;
 }
 
@@ -2658,7 +2088,7 @@ static int xlnx_dp_remove(struct platform_device *pdev)
 {
 	struct xlnx_dp *dp = platform_get_drvdata(pdev);
 
-	xlnx_dp_write(dp->iomem, XLNX_DP_TX_ENABLE, 0);
+	xlnx_dp_write(dp->dp_base, XDPTX_ENABLE_REG, 0);
 	drm_dp_aux_unregister(&dp->aux);
 	xlnx_dp_exit_phy(dp);
 	component_del(&pdev->dev, &xlnx_dp_component_ops);
@@ -2667,8 +2097,8 @@ static int xlnx_dp_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xlnx_dp_of_match[] = {
-	{ .compatible = "xlnx,v-dp-txss1-2.1"},
-	{ }
+	{ .compatible = "xlnx,v-dp-txss-3.0", },
+	{ /* end of table */ }
 };
 MODULE_DEVICE_TABLE(of, xlnx_dp_of_match);
 
@@ -2683,7 +2113,6 @@ static struct platform_driver dp_tx_driver = {
 
 module_platform_driver(dp_tx_driver);
 
-MODULE_AUTHOR("GV Rao <vgannava@xilinx.com>");
+MODULE_AUTHOR("Rajesh Gugulothu <gugulothu.rajesh@xilinx.com>");
 MODULE_DESCRIPTION("Xilinx FPGA DisplayPort Tx Driver");
 MODULE_LICENSE("GPL v2");
-
