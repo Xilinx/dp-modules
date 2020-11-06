@@ -75,8 +75,8 @@
 #define XVPHY_DRP_RX_INT_DATA_WIDTH     0x66
 #define XVPHY_DRP_GTHE4_PRBS_ERR_CNTR_LOWER 0x25E
 #define XVPHY_DRP_GTHE4_PRBS_ERR_CNTR_UPPER 0x25F
- #define TX_DATA_WIDTH_REG 0x7A
-#define TX_INT_DATAWIDTH_REG 0x85
+#define TX_DATA_WIDTH_REG 		0x7A
+#define TX_INT_DATAWIDTH_REG 		0x85
 
 #define XVPHY_GTHE4_DIFF_SWING_DP_V0P0 0x1
 #define XVPHY_GTHE4_DIFF_SWING_DP_V0P1 0x2
@@ -147,7 +147,8 @@ int mcdp6000_entry(void);
 void mcdp6000_exit(void);
 
 int IDT_8T49N24x_SetClock(void);
-
+static void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
+					struct phy_configure_opts_dp *dp);
 typedef enum {
         ONBOARD_REF_CLK = 1,
         DP159_FORWARDED_CLK = 3,
@@ -204,47 +205,47 @@ static XVphy_User_Config PHY_User_Config_Table[] =
  * */
   {   0,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x06,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
+          1620,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
 		  ONBOARD_REF_CLK,    ONBOARD_REF_CLK,     270000000,270000000},
   {   1,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x0A,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
+          2700,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
 		  ONBOARD_REF_CLK,    ONBOARD_REF_CLK,     270000000,270000000},
   {   2,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x14,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
+          5400,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
 		  ONBOARD_REF_CLK,    ONBOARD_REF_CLK,     270000000,270000000},
   {   3,     XVPHY_PLL_TYPE_QPLL1,  XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CMN1,    XVPHY_CHANNEL_ID_CHA,
-          0x06,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
+          1620,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,     270000000,270000000},
   {   4,     XVPHY_PLL_TYPE_QPLL1,  XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CMN1,    XVPHY_CHANNEL_ID_CHA,
-          0x0A,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
+          2700,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,     270000000,270000000},
   {   5,     XVPHY_PLL_TYPE_QPLL1,  XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CMN1,    XVPHY_CHANNEL_ID_CHA,
-          0x14,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
+          5400,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,     270000000,270000000},
   {   6,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x06,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
+          1620,    XVPHY_DP_LINK_RATE_HZ_162GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,         270000000,270000000},
   {   7,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x0A,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
+          2700,    XVPHY_DP_LINK_RATE_HZ_270GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,         270000000,270000000},
   {   8,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
           XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-          0x14,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
+          5400,    XVPHY_DP_LINK_RATE_HZ_540GBPS,
           ONBOARD_REF_CLK,        ONBOARD_REF_CLK,         270000000,270000000},
   {   9,     XVPHY_PLL_TYPE_CPLL,   XVPHY_PLL_TYPE_CPLL,
 		  XVPHY_CHANNEL_ID_CHA,     XVPHY_CHANNEL_ID_CHA,
-		  0x1E,    XVPHY_DP_LINK_RATE_HZ_810GBPS,
+		  8100,    XVPHY_DP_LINK_RATE_HZ_810GBPS,
 		  ONBOARD_REF_CLK,        ONBOARD_REF_CLK,         270000000,270000000},
  {   10,     XVPHY_PLL_TYPE_QPLL1,  XVPHY_PLL_TYPE_CPLL,
 		  XVPHY_CHANNEL_ID_CMN1,    XVPHY_CHANNEL_ID_CHA,
-		  0x1E,    XVPHY_DP_LINK_RATE_HZ_810GBPS,
+		  8100,    XVPHY_DP_LINK_RATE_HZ_810GBPS,
 		  ONBOARD_REF_CLK,        ONBOARD_REF_CLK,     270000000,270000000},
 
 };
@@ -286,10 +287,10 @@ EXPORT_SYMBOL_GPL(xvphy_mutex_lock);
 * @note        None.
 *
 ******************************************************************************/
-void PLLRefClkSel (XVphy *InstancePtr, u8 link_rate) {
-	u32 Status=1;
+void PLLRefClkSel (XVphy *InstancePtr, u32 link_rate) {
+
 	switch (link_rate) {
-	case 0x6:
+	case 1620:
 		XVphy_CfgQuadRefClkFreq(InstancePtr, 0, 
 		ONBOARD_REF_CLK,
 					XVPHY_DP_REF_CLK_FREQ_HZ_270);
@@ -302,7 +303,7 @@ void PLLRefClkSel (XVphy *InstancePtr, u8 link_rate) {
 		XVphy_CfgLineRate(InstancePtr, 0, XVPHY_CHANNEL_ID_CMN1,
 				  XVPHY_DP_LINK_RATE_HZ_162GBPS);
 		break;
-	case 0x14:
+	case 5400:
 		XVphy_CfgQuadRefClkFreq(InstancePtr, 0, 
 		ONBOARD_REF_CLK,
 					XVPHY_DP_REF_CLK_FREQ_HZ_270);
@@ -315,7 +316,7 @@ void PLLRefClkSel (XVphy *InstancePtr, u8 link_rate) {
 		XVphy_CfgLineRate(InstancePtr, 0, XVPHY_CHANNEL_ID_CMN1,
 				  XVPHY_DP_LINK_RATE_HZ_540GBPS);
 		break;
-	case 0x1E:
+	case 8100:
 		XVphy_CfgQuadRefClkFreq(InstancePtr, 0, 
 		ONBOARD_REF_CLK,
 					XVPHY_DP_REF_CLK_FREQ_HZ_270);
@@ -356,20 +357,19 @@ void PLLRefClkSel (XVphy *InstancePtr, u8 link_rate) {
 * @note        None.
 *
 ******************************************************************************/
-void DpRxSs_LinkBandwidthHandler(u8 linkrate)
+void DpRxSs_LinkBandwidthHandler(u32 linkrate)
 {
 	/*Program Video PHY to requested line rate*/
 	PLLRefClkSel (&vphydev->xvphy,linkrate);
 	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			 XVPHY_DIR_RX,(TRUE));
-			 
-			 XVphy_PllInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
-			 	ONBOARD_REF_CLK, ONBOARD_REF_CLK,
-				XVPHY_PLL_TYPE_QPLL1, XVPHY_PLL_TYPE_CPLL);
-		XVphy_ClkInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_RX);
-}
-EXPORT_SYMBOL(DpRxSs_LinkBandwidthHandler);
 
+	XVphy_PllInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+			    ONBOARD_REF_CLK, ONBOARD_REF_CLK,
+			    XVPHY_PLL_TYPE_QPLL1, XVPHY_PLL_TYPE_CPLL);
+	XVphy_ClkInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+			    XVPHY_DIR_RX);
+}
 
 /*****************************************************************************/
 /**
@@ -494,22 +494,22 @@ u32 set_vphy(int LineRate_init_tx){
         u32 Status=0;
   #if 1
         switch(LineRate_init_tx){
-                case XDP_TX_LINK_BW_SET_162GBPS:
+                case 1620:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?0:3]);
                         break;
 
-                case XDP_TX_LINK_BW_SET_270GBPS:
+                case 2700:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?1:4]);
                         break;
 
-                case XDP_TX_LINK_BW_SET_540GBPS:
+                case 5400:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?2:5]);
                         break;
 
-                case XDP_TX_LINK_BW_SET_810GBPS:
+                case 8100:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?9:10]);
                         break;
@@ -524,6 +524,140 @@ u32 set_vphy(int LineRate_init_tx){
         return Status;
 }
 EXPORT_SYMBOL_GPL(set_vphy);
+unsigned int diff_swing[4][4] =
+{
+	{0x3, 0x6, 0x9, 0xf},
+	{0x6, 0x9, 0xf, 0xf},
+	{0x9, 0xf, 0xf, 0xf},
+	{0xf, 0xf, 0xf, 0xf}
+};
+void xvphy_SetTxPreEmphasis(XVphy *InstancePtr, u32 chid, u8 pe)
+{
+	u32 regval;
+	u32 maskval;
+	u32 regoffset;
+
+	if (chid == XVPHY_CHANNEL_ID_CH1 || chid == XVPHY_CHANNEL_ID_CH2)
+		regoffset = XVPHY_TX_DRIVER_CH12_REG;
+	else
+		regoffset = XVPHY_TX_DRIVER_CH34_REG;
+
+	regval = XVphy_ReadReg(InstancePtr->Config.BaseAddr, regoffset);
+	maskval = XVPHY_TX_DRIVER_TXPRECURSOR_MASK(chid);
+	regval &= ~maskval;
+	regval |= (pe << XVPHY_TX_DRIVER_TXPRECURSOR_SHIFT(chid));
+	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
+}
+
+/**
+ * xlnx_dp_phy_set_tx_voltage_swing - Configure the vs values
+ * @dp: DisplayPort IP core structure
+ * @chid: channel index
+ * @vs: vs value to be set
+ *
+ * This function sets the voltage swing value of the phy
+ */
+
+void xvphy_SetTxVoltageSwing (XVphy *InstancePtr, u32 chid, u8 vs)
+{
+	u32 regval;
+	u32 maskval;
+	u32 regoffset;
+
+	if (chid == XVPHY_CHANNEL_ID_CH1 || chid == XVPHY_CHANNEL_ID_CH2)
+		regoffset = XVPHY_TX_DRIVER_CH12_REG;
+	else
+		regoffset = XVPHY_TX_DRIVER_CH34_REG;
+
+	regval = XVphy_ReadReg(InstancePtr->Config.BaseAddr, regoffset);
+	maskval = XVPHY_TX_DRIVER_TXDIFFCTRL_MASK(chid);
+	regval &= ~maskval;
+	regval |= (vs << XVPHY_TX_DRIVER_TXDIFFCTRL_SHIFT(chid));
+	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
+}
+
+
+/**
+ * xvphy__pe_vs_adjust_handler - Calculate and configure pe and vs values
+ * @dp: DisplayPort IP core structure
+ *
+ * This function adjusts the pre emphasis and voltage swing values of phy.
+ */
+
+void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
+					struct phy_configure_opts_dp *dp)
+{
+	unsigned char preemp = 0, diff_swing = 0;
+
+	switch (dp->pre[0]) {
+	case 0:
+		preemp = XVPHY_GTHE3_PREEMP_DP_L0; break;
+	case 1:
+		preemp = XVPHY_GTHE3_PREEMP_DP_L1; break;
+	case 2:
+		preemp = XVPHY_GTHE3_PREEMP_DP_L2; break;
+	case 3:
+		preemp = XVPHY_GTHE3_PREEMP_DP_L3; break;
+	}
+
+		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH1, preemp);
+		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH2, preemp);
+		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH3, preemp);
+		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH4, preemp);
+
+	switch (dp->voltage[0]) {
+	case 0:
+		switch (dp->pre[0]) {
+		case 0:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L0;
+			break;
+		case 1:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
+			break;
+		case 2:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
+			break;
+		case 3:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
+			break;
+		}
+		break;
+	case 1:
+		switch (dp->pre[0]) {
+		case 0:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
+			break;
+		case 1:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
+			break;
+		case 2:
+		case 3:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
+			break;
+		}
+		break;
+	case 2:
+		switch (dp->pre[0]) {
+		case 0:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
+			break;
+		case 1:
+		case 2:
+		case 3:
+			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
+			break;
+		}
+		break;
+	case 3:
+		diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
+		break;
+	}
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, diff_swing);
+}
+
 void xvphy_mutex_unlock(struct phy *phy)
 {
 	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
@@ -611,6 +745,31 @@ static int xvphy_phy_init(struct phy *phy)
 	BUG_ON(!phy);
 	return 0;
 }
+static int xvphy_phy_reset(struct phy *phy)
+{
+	BUG_ON(!phy);
+	DpRxSs_PllResetHandler();
+
+	return 0;
+}
+static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
+{
+	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
+
+	BUG_ON(!phy);
+	if(opts->dp.set_rate && (vphy_lane->direction_tx == 0)) {
+		DpRxSs_LinkBandwidthHandler(opts->dp.link_rate);
+		opts->dp.set_rate = 0;
+	}
+	if(opts->dp.set_rate && (vphy_lane->direction_tx == 1)) {
+		set_vphy(opts->dp.link_rate);
+		opts->dp.set_rate = 0;
+	}
+	if(opts->dp.set_voltages) {
+		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
+	}
+	return 0;
+}
 /**
  * xvphy_xlate - provides a PHY specific to a controller
  * @dev: pointer to device
@@ -669,6 +828,8 @@ static struct phy *xvphy_xlate(struct device *dev,
 XVphy_Config XVphy_ConfigTable[XPAR_XVPHY_NUM_INSTANCES];
 
 static struct phy_ops xvphy_phyops = {
+	.configure	= xvphy_phy_configure,
+	.reset		= xvphy_phy_reset,
 	.init		= xvphy_phy_init,
 	.owner		= THIS_MODULE,
 };
@@ -776,48 +937,48 @@ error_dt:
 void PHY_Two_byte_set (XVphy *InstancePtr, u8 TX_Rx_to_two_byte)
 {
 
-    u16 DrpVal,DrpVal1;
-    u16 WriteVal,WriteVal1;
+	u16 DrpVal,DrpVal1;
+	u16 WriteVal,WriteVal1;
 	u32 Status;
-
-    if (TX_Rx_to_two_byte == 1) {
 	
-	Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,TX_DATA_WIDTH_REG, &DrpVal);
-    Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_DATA_WIDTH,&DrpVal1);
+	if (TX_Rx_to_two_byte == 1) {
+		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,TX_DATA_WIDTH_REG, &DrpVal);
+		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_DATA_WIDTH,&DrpVal1);
+
 		if(Status != XST_SUCCESS){
 			printk("DRP access failed\r\n");
 			return;
 		}
-		
-      	DrpVal &= ~0xF;
+
+		DrpVal &= ~0xF;
 		WriteVal = 0x0;
 		WriteVal = DrpVal | 0x3;
 		Status  = XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_DATA_WIDTH_REG, WriteVal);
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2, TX_DATA_WIDTH_REG, WriteVal);
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3, TX_DATA_WIDTH_REG, WriteVal);
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4, TX_DATA_WIDTH_REG, WriteVal);
-	
-	   	DrpVal1 &= ~0x1E0;
-        WriteVal1 = 0x0;
-        WriteVal1 = DrpVal1 | 0x60;
+
+		DrpVal1 &= ~0x1E0;
+		WriteVal1 = 0x0;
+		WriteVal1 = DrpVal1 | 0x60;
 		Status  = XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
 		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-    	Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
+		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
 		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-	
-	   
+
 		if(Status != XST_SUCCESS){
 			printk("DRP access failed\r\n");
 			return;
 		}
 
-       Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_INT_DATAWIDTH_REG, &DrpVal);
-	    Status  = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH,&DrpVal1);
-			
-			if(Status != XST_SUCCESS){
+		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_INT_DATAWIDTH_REG, &DrpVal);
+		Status  = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH,&DrpVal1);
+
+		if(Status != XST_SUCCESS){
 			printk("DRP access failed\r\n");
 			return;
 		}
+
 		DrpVal &= ~0xC00;
 		WriteVal = 0x0;
 		WriteVal = DrpVal | 0x0;
@@ -825,25 +986,22 @@ void PHY_Two_byte_set (XVphy *InstancePtr, u8 TX_Rx_to_two_byte)
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2, TX_INT_DATAWIDTH_REG, WriteVal);
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3, TX_INT_DATAWIDTH_REG, WriteVal);
 		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4, TX_INT_DATAWIDTH_REG, WriteVal);
-        DrpVal1 &= ~0x3;
-        WriteVal1 = 0x0;
-        WriteVal1= DrpVal1 | 0x0;
-        XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
+		DrpVal1 &= ~0x3;
+		WriteVal1 = 0x0;
+		WriteVal1= DrpVal1 | 0x0;
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
 		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
 		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
 		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
 		
-		
-
-	
-	if(Status != XST_SUCCESS){
+		if(Status != XST_SUCCESS){
 			printk("DRP access failed\r\n");
 			return;
 		}
-		}
-				else 
-				printk("phy:not a two byte\n");
-								}
+	}
+	else
+		printk("phy:not a two byte\n");
+}
 
 struct reg_8 {
         u16 addr;
@@ -871,9 +1029,6 @@ static const struct regmap_config fmc_regmap_config = {
  * ******************************************************************************/
 int VideoFMC_Init(void)
 {
-	int Status;
-	u8 Buffer[2];
-	int ByteCount;
 
 	return XST_SUCCESS;
 }
@@ -888,18 +1043,14 @@ int VideoFMC_Init(void)
 static int xvphy_probe(struct platform_device *pdev)
 {
 	struct device_node *child, *np = pdev->dev.of_node;
-	//struct xvphy_dev *vphydev;
 	struct phy_provider *provider;
 	struct phy *phy;
 	unsigned long axi_lite_rate;
 	unsigned long drp_clk_rate;
-	u8 Buffer[2];
 	unsigned int Status=1;
 	struct resource *res;
 	int port = 0, index = 0;
 	int ret;
-	u32 Data;
-	u16 DrpVal;
 
 	dev_info(&pdev->dev, "xlnx-dp-vphy: probed\n");
 	vphydev = devm_kzalloc(&pdev->dev, sizeof(*vphydev), GFP_KERNEL);
@@ -1066,6 +1217,12 @@ static int xvphy_probe(struct platform_device *pdev)
 
 	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(FALSE));
 
+	provider = devm_of_phy_provider_register(&pdev->dev, xvphy_xlate);
+	if (IS_ERR(provider)) {
+		dev_err(&pdev->dev, "registering provider failed\n");
+			return PTR_ERR(provider);
+	}
+
 	ret = devm_request_threaded_irq(&pdev->dev, vphydev->irq, xvphy_irq_handler, xvphy_irq_thread,
 			IRQF_TRIGGER_HIGH /*IRQF_SHARED*/, "xilinx-vphy", vphydev/*dev_id*/);
 
@@ -1113,30 +1270,6 @@ MODULE_DESCRIPTION("Xilinx Vphy driver");
    hdmi-rx and hdmi-tx driver. All shared API's need to be exported */
 
 /* Configuration Tables for hdcp */
-//XTmrCtr_Config XTmrCtr_ConfigTable[XPAR_XTMRCTR_NUM_INSTANCES];
-///* common functionality shared between RX and TX */
-///* xvidc component */
-//EXPORT_SYMBOL_GPL(XVidC_ReportTiming);
-//EXPORT_SYMBOL_GPL(XVidC_SetVideoStream);
-//EXPORT_SYMBOL_GPL(XVidC_ReportStreamInfo);
-//EXPORT_SYMBOL_GPL(XVidC_EdidGetManName);
-//EXPORT_SYMBOL_GPL(XVidC_Set3DVideoStream);
-//EXPORT_SYMBOL_GPL(XVidC_GetPixelClockHzByVmId);
-//EXPORT_SYMBOL_GPL(XVidC_GetVideoModeIdWBlanking);
-//EXPORT_SYMBOL_GPL(XVidC_GetVideoModeId);
-//EXPORT_SYMBOL_GPL(XVidC_GetPixelClockHzByHVFr);
-//EXPORT_SYMBOL_GPL(XVidC_ShowStreamInfo);
-/* Global API's for XTmr */
-//EXPORT_SYMBOL_GPL(XTmrCtr_CfgInitialize);
-//EXPORT_SYMBOL_GPL(XTmrCtr_IsExpired);
-//EXPORT_SYMBOL_GPL(XTmrCtr_Start);
-//EXPORT_SYMBOL_GPL(XTmrCtr_InitHw);
-//EXPORT_SYMBOL_GPL(XTmrCtr_SetOptions);
-//EXPORT_SYMBOL_GPL(XTmrCtr_SetResetValue);
-//EXPORT_SYMBOL_GPL(XTmrCtr_Offsets);
-//EXPORT_SYMBOL_GPL(XTmrCtr_LookupConfig);
-//EXPORT_SYMBOL_GPL(XTmrCtr_GetOptions);
-//EXPORT_SYMBOL_GPL(XTmrCtr_Stop);
 
 EXPORT_SYMBOL_GPL(XDebug_SetDebugBufPrintf);
 EXPORT_SYMBOL_GPL(XDebug_SetDebugPrintf);
