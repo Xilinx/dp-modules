@@ -363,12 +363,12 @@ void DpRxSs_LinkBandwidthHandler(u32 linkrate)
 	PLLRefClkSel (&vphydev->xvphy,linkrate);
 	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			 XVPHY_DIR_RX,(TRUE));
-
 	XVphy_PllInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			    ONBOARD_REF_CLK, ONBOARD_REF_CLK,
 			    XVPHY_PLL_TYPE_QPLL1, XVPHY_PLL_TYPE_CPLL);
 	XVphy_ClkInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			    XVPHY_DIR_RX);
+
 }
 
 /*****************************************************************************/
@@ -423,24 +423,23 @@ u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_T
         XVphy_PllType TxPllSelect;
         XVphy_PllType RxPllSelect; // Required for VPHY setting
         XVphy_ChannelId TxChId;
-        //XVphy_ChannelId RxChId;
         u8 QuadId = 0;
         u32 Status = XST_FAILURE;
         u32 retries = 0;
 
-        QpllRefClkSel = PHY_User_Config_Table.QPLLRefClkSrc;
-        CpllRefClkSel = PHY_User_Config_Table.CPLLRefClkSrc;
-        TxPllSelect   = PHY_User_Config_Table.TxPLL;
-        // Required for VPHY setting
-       RxPllSelect   = PHY_User_Config_Table.RxPLL;
-        TxChId        = PHY_User_Config_Table.TxChId;
+	QpllRefClkSel = PHY_User_Config_Table.QPLLRefClkSrc;
+	CpllRefClkSel = PHY_User_Config_Table.CPLLRefClkSrc;
+
+	TxPllSelect   = PHY_User_Config_Table.TxPLL;
+	RxPllSelect   = PHY_User_Config_Table.RxPLL;
+	TxChId        = PHY_User_Config_Table.TxChId;
 
         //Set the Ref Clock Frequency
-       XVphy_CfgQuadRefClkFreq(InstancePtr, QuadId, QpllRefClkSel, PHY_User_Config_Table.QPLLRefClkFreqHz);
-        XVphy_CfgQuadRefClkFreq(InstancePtr, QuadId, CpllRefClkSel, PHY_User_Config_Table.CPLLRefClkFreqHz);
-        XVphy_CfgLineRate(InstancePtr, QuadId, TxChId, PHY_User_Config_Table.LineRateHz);
+	XVphy_CfgQuadRefClkFreq(InstancePtr, QuadId, QpllRefClkSel, PHY_User_Config_Table.QPLLRefClkFreqHz);
+	XVphy_CfgQuadRefClkFreq(InstancePtr, QuadId, CpllRefClkSel, PHY_User_Config_Table.CPLLRefClkFreqHz);
+	XVphy_CfgLineRate(InstancePtr, QuadId, TxChId, PHY_User_Config_Table.LineRateHz);
 
-        XVphy_PllInitialize(InstancePtr, QuadId, TxChId, QpllRefClkSel, CpllRefClkSel, TxPllSelect, RxPllSelect);
+	XVphy_PllInitialize(InstancePtr, QuadId, TxChId, QpllRefClkSel, CpllRefClkSel, TxPllSelect, RxPllSelect);
 
         // Initialize GT with ref clock and PLL selects
         // GT DRPs may not get completed if GT is busy doing something else
@@ -455,24 +454,20 @@ u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_T
                 retries++;
         }
 
-        XVphy_WriteReg(InstancePtr->Config.BaseAddr, XVPHY_PLL_RESET_REG, 0x0);
+	XVphy_WriteReg(InstancePtr->Config.BaseAddr, XVPHY_PLL_RESET_REG, 0x0);
+	Status = XVphy_ResetGtPll(InstancePtr, QuadId,
+				  XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(FALSE));
+	Status += XVphy_WaitForPmaResetDone(InstancePtr, QuadId,
+					    XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX);
+	Status += XVphy_WaitForPllLock(InstancePtr, QuadId, TxChId);
+	Status += XVphy_WaitForResetDone(InstancePtr, QuadId,
+					 XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX);
+	if (Status  != XST_SUCCESS) {
+		printk ("++++TX GT config encountered error++++\r\n");
+		printk("%d %s PLL Lock done failed: Status =%d\n",__LINE__,__func__,Status);
+	}
 
-
-        Status = XVphy_ResetGtPll(InstancePtr, QuadId,
-   				XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(FALSE));
-
-
-        Status += XVphy_WaitForPmaResetDone(InstancePtr, QuadId,
-                                                XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX);
-        Status += XVphy_WaitForPllLock(InstancePtr, QuadId, TxChId);
-        printk("PLL Lock  : Status =%d\n",Status);
-        Status += XVphy_WaitForResetDone(InstancePtr, QuadId,
-                                                XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX);
-        if (Status  != XST_SUCCESS) {
-                printk ("++++TX GT config encountered error++++\r\n");
-                printk("%d %s PLL Lock done failed: Status =%d\n",__LINE__,__func__,Status);
-        }
-        return (Status);
+	return (Status);
 }
 struct xvphy_dev *vphydev;
 
@@ -492,7 +487,7 @@ u32 set_vphy(int LineRate_init_tx){
 
 
         u32 Status=0;
-  #if 1
+
         switch(LineRate_init_tx){
                 case 1620:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
@@ -519,7 +514,6 @@ u32 set_vphy(int LineRate_init_tx){
                 printk ( "+++++++ vphy TX GT configuration encountered a failure +++++++ Sta     tus=%d\r\n",Status);
         }
 
-#endif
 
         return Status;
 }
@@ -767,7 +761,9 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 	}
 	if(opts->dp.set_voltages) {
 		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
+		opts->dp.set_voltages = 0;
 	}
+
 	return 0;
 }
 /**
@@ -934,73 +930,92 @@ error_dt:
 * @note        None.
 *
 ******************************************************************************/
-void PHY_Two_byte_set (XVphy *InstancePtr, u8 TX_Rx_to_two_byte)
+void PHY_Two_byte_set (XVphy *InstancePtr, u8 Rx_to_two_byte,
+			u8 Tx_to_two_byte)
 {
+	u16 DrpVal;
+	u16 WriteVal;
 
-	u16 DrpVal,DrpVal1;
-	u16 WriteVal,WriteVal1;
-	u32 Status;
-	
-	if (TX_Rx_to_two_byte == 1) {
-		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,TX_DATA_WIDTH_REG, &DrpVal);
-		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_DATA_WIDTH,&DrpVal1);
+	if (Rx_to_two_byte == 1) {
+		XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+				XVPHY_DRP_RX_DATA_WIDTH,&DrpVal);
+		DrpVal &= ~0x1E0;
+		WriteVal = 0x0;
+		WriteVal = DrpVal | 0x60;
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+				XVPHY_DRP_RX_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,
+				XVPHY_DRP_RX_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,
+				XVPHY_DRP_RX_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,
+				XVPHY_DRP_RX_DATA_WIDTH, WriteVal);
 
-		if(Status != XST_SUCCESS){
-			printk("DRP access failed\r\n");
+		XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+				XVPHY_DRP_RX_INT_DATA_WIDTH,&DrpVal);
+		DrpVal &= ~0x3;
+		WriteVal = 0x0;
+		WriteVal = DrpVal | 0x0;
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+				XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,
+				XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,
+				XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal);
+		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,
+				XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal);
+		xil_printf ("RX Channel configured for 2byte mode\r\n");
+	}
+
+	if (Tx_to_two_byte == 1) {
+		u32 Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+				TX_DATA_WIDTH_REG, &DrpVal);
+
+		if (Status != XST_SUCCESS) {
+			xil_printf("DRP access failed\r\n");
 			return;
 		}
 
 		DrpVal &= ~0xF;
 		WriteVal = 0x0;
 		WriteVal = DrpVal | 0x3;
-		Status  = XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_DATA_WIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2, TX_DATA_WIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3, TX_DATA_WIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4, TX_DATA_WIDTH_REG, WriteVal);
-
-		DrpVal1 &= ~0x1E0;
-		WriteVal1 = 0x0;
-		WriteVal1 = DrpVal1 | 0x60;
-		Status  = XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-		Status  += XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,XVPHY_DRP_RX_DATA_WIDTH, WriteVal1);
-
+		Status  =XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+					TX_DATA_WIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,
+					TX_DATA_WIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,
+					TX_DATA_WIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,
+					TX_DATA_WIDTH_REG, WriteVal);
 		if(Status != XST_SUCCESS){
-			printk("DRP access failed\r\n");
+			xil_printf("DRP access failed\r\n");
 			return;
 		}
 
-		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_INT_DATAWIDTH_REG, &DrpVal);
-		Status  = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH,&DrpVal1);
-
-		if(Status != XST_SUCCESS){
-			printk("DRP access failed\r\n");
+		Status = XVphy_DrpRd(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+					TX_INT_DATAWIDTH_REG, &DrpVal);
+		if (Status != XST_SUCCESS) {
+			xil_printf("DRP access failed\r\n");
 			return;
 		}
 
 		DrpVal &= ~0xC00;
 		WriteVal = 0x0;
 		WriteVal = DrpVal | 0x0;
-		Status  =XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1, TX_INT_DATAWIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2, TX_INT_DATAWIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3, TX_INT_DATAWIDTH_REG, WriteVal);
-		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4, TX_INT_DATAWIDTH_REG, WriteVal);
-		DrpVal1 &= ~0x3;
-		WriteVal1 = 0x0;
-		WriteVal1= DrpVal1 | 0x0;
-		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
-		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
-		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
-		XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,XVPHY_DRP_RX_INT_DATA_WIDTH, WriteVal1);
-		
-		if(Status != XST_SUCCESS){
-			printk("DRP access failed\r\n");
+		Status  =XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH1,
+					TX_INT_DATAWIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH2,
+					TX_INT_DATAWIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH3,
+					TX_INT_DATAWIDTH_REG, WriteVal);
+		Status +=XVphy_DrpWr(InstancePtr, 0, XVPHY_CHANNEL_ID_CH4,
+					TX_INT_DATAWIDTH_REG, WriteVal);
+		if (Status != XST_SUCCESS) {
+			xil_printf("DRP access failed\r\n");
 			return;
 		}
+		xil_printf ("TX Channel configured for 2byte mode\r\n");
 	}
-	else
-		printk("phy:not a two byte\n");
 }
 
 struct reg_8 {
@@ -1203,29 +1218,53 @@ static int xvphy_probe(struct platform_device *pdev)
         if(Status)
                 printk("vphy: @14  MCDP6000 init failed\n");
 	
-
-
 	PLLRefClkSel (&vphydev->xvphy, PHY_User_Config_Table[9].LineRate);
-	
 	XVphy_DpInitialize(&vphydev->xvphy,&XVphy_ConfigTable[instance], 0,
 			   PHY_User_Config_Table[9].CPLLRefClkSrc,
 			   PHY_User_Config_Table[9].QPLLRefClkSrc,
 			   PHY_User_Config_Table[9].TxPLL,
 			   PHY_User_Config_Table[9].RxPLL,
 			   PHY_User_Config_Table[9].LineRate);
-	PHY_Two_byte_set(&vphydev->xvphy, SET_RX_TO_2BYTE);
 
+	//setting vswing
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1,
+				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2,
+				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3,
+				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4,
+				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
+	PHY_Two_byte_set (&vphydev->xvphy, 1, 1);
+
+	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(TRUE));
+	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(TRUE));
+
+	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+			 XVPHY_DIR_TX,(FALSE));
+	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(FALSE));
+
+	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+			 XVPHY_DIR_RX,(TRUE));
+	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(TRUE));
+
+	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+			 XVPHY_DIR_RX,(FALSE));
 	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(FALSE));
+
+	Status = PHY_Configuration_Tx(&vphydev->xvphy,
+				PHY_User_Config_Table[(is_TX_CPLL) ? 2 : 5]);
 
 	provider = devm_of_phy_provider_register(&pdev->dev, xvphy_xlate);
 	if (IS_ERR(provider)) {
 		dev_err(&pdev->dev, "registering provider failed\n");
-			return PTR_ERR(provider);
+		return PTR_ERR(provider);
 	}
 
-	ret = devm_request_threaded_irq(&pdev->dev, vphydev->irq, xvphy_irq_handler, xvphy_irq_thread,
-			IRQF_TRIGGER_HIGH /*IRQF_SHARED*/, "xilinx-vphy", vphydev/*dev_id*/);
-
+	ret = devm_request_threaded_irq(&pdev->dev, vphydev->irq,
+					xvphy_irq_handler, xvphy_irq_thread,
+					IRQF_TRIGGER_HIGH /*IRQF_SHARED*/,
+					"xilinx-vphy", vphydev/*dev_id*/);
 	if (ret) {
 		dev_err(&pdev->dev, "unable to request IRQ %d\n", vphydev->irq);
 		return ret;
@@ -1265,11 +1304,3 @@ module_platform_driver(xvphy_driver);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Leon Woestenberg <leon@sidebranch.com>");
 MODULE_DESCRIPTION("Xilinx Vphy driver");
-
-/* phy sub-directory is used as a place holder for all shared code for
-   hdmi-rx and hdmi-tx driver. All shared API's need to be exported */
-
-/* Configuration Tables for hdcp */
-
-EXPORT_SYMBOL_GPL(XDebug_SetDebugBufPrintf);
-EXPORT_SYMBOL_GPL(XDebug_SetDebugPrintf);
