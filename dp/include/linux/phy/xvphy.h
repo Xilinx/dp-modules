@@ -647,6 +647,7 @@ typedef struct {
 	u32 AxiLiteClkFreq;	    /**< AXI Lite Clock Frequency in Hz */
 	u32 DrpClkFreq;	        /**< DRP Clock Frequency in Hz */
 	u8  UseGtAsTxTmdsClk;	/**< Use 4th GT channel as TX TMDS clock */
+	u32 xfmc_present;	/* Enable/Disable xfmc programming */
 } XVphy_Config;
 
 /* Forward declaration. */

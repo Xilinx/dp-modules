@@ -842,7 +842,6 @@ static int vphy_parse_of(struct xvphy_dev *vphydev, XVphy_Config *c)
 	u32 val;
 	bool has_err_irq;
 
-
 	rc = of_property_read_u32(node, "xlnx,transceiver-type", &val);
 	if (rc < 0)
 		goto error_dt;
@@ -910,6 +909,9 @@ static int vphy_parse_of(struct xvphy_dev *vphydev, XVphy_Config *c)
 	has_err_irq = false;
 	has_err_irq = of_property_read_bool(node, "xlnx,err-irq-en");
 	c->ErrIrq = has_err_irq;
+
+	c->xfmc_present =
+		of_property_read_bool(node, "xlnx,xfmc-present");
 	return 0;
 
 error_dt:
@@ -1042,8 +1044,45 @@ static const struct regmap_config fmc_regmap_config = {
  * * @note        None.
  * *
  * ******************************************************************************/
-int VideoFMC_Init(void)
+int xfmc_init(void)
 {
+	unsigned int Status=1;
+
+	/* Platform Initialization */
+	fmc_entry();
+	fmc64_entry();
+	fmc65_entry();
+	tipower_entry();
+	mcdp6000_entry();
+	Status = fmc_init();
+	if(Status)
+		printk("vphy: @75 selection HPC FMC failed\n");
+	Status = fmc64_init();
+        if(Status)
+                printk("vphy: @64 Configure VFMC IO Expander 0 failed\n");
+	Status = fmc65_init();
+	if(Status)
+		printk("vphy: @65 Configure VFMC IO Expander 1 failed\n");
+
+	idt_init();
+	Status = IDT_8T49N24x_Init();
+	if(Status)
+		printk("vphy: @7C IDT init failed\n");
+
+	Status = tipower_init();
+	if(Status)
+		printk("vphy: @50  TI POWER config failed\n");
+
+	Status = IDT_8T49N24x_SetClock();
+	if(Status)
+		printk("vphy: @7C IDT set clock failed\n");
+
+	Status = IDT_8T49N24x_Configure();
+	if(Status)
+	printk("vphy: @7C IDT configure failed\n");
+			Status = mcdp6000_init();
+        if(Status)
+                printk("vphy: @14  MCDP6000 init failed\n");
 
 	return XST_SUCCESS;
 }
@@ -1177,46 +1216,10 @@ static int xvphy_probe(struct platform_device *pdev)
 
 	drp_clk_rate = clk_get_rate(vphydev->drp_clk);
 	
-	
-	
 	XVphy_ConfigTable[instance].DrpClkFreq = drp_clk_rate;
-	/*Platform Init */
-	fmc_entry();
-	fmc64_entry();
-	fmc65_entry();
-	tipower_entry();
-	mcdp6000_entry();
-	Status = fmc_init();
-	if(Status)
-		printk("vphy: @75 selection HPC FMC failed\n");
-	Status = fmc64_init();
-        if(Status)
-                printk("vphy: @64 Configure VFMC IO Expander 0 failed\n");
-	Status = fmc65_init();
-        if(Status)
-                printk("vphy: @65 Configure VFMC IO Expander 1 failed\n");
-	
-	idt_init();
-	Status = IDT_8T49N24x_Init();
-	if(Status)
-                printk("vphy: @7C IDT init failed\n");
-
-	Status = tipower_init();
-        if(Status)
-                printk("vphy: @50  TI POWER config failed\n");
-
-	Status = IDT_8T49N24x_SetClock();
-        if(Status)
-                printk("vphy: @7C IDT set clock failed\n");
-				
-	
-	Status = IDT_8T49N24x_Configure();
-	if(Status)
-                printk("vphy: @7C IDT configure failed\n");
-				
-	Status = mcdp6000_init();
-        if(Status)
-                printk("vphy: @14  MCDP6000 init failed\n");
+	printk("xfmc_presetn %d \r\n",XVphy_ConfigTable[instance].xfmc_present);
+	if (XVphy_ConfigTable[instance].xfmc_present)
+		xfmc_init();
 	
 	PLLRefClkSel (&vphydev->xvphy, PHY_User_Config_Table[9].LineRate);
 	XVphy_DpInitialize(&vphydev->xvphy,&XVphy_ConfigTable[instance], 0,
