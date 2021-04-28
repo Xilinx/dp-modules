@@ -359,6 +359,7 @@ void PLLRefClkSel (XVphy *InstancePtr, u32 link_rate) {
 ******************************************************************************/
 void DpRxSs_LinkBandwidthHandler(u32 linkrate)
 {
+//	dev_dbg(vphydev->dev,"  DpRxSs_LinkBandwidthHandler \n");
 	/*Program Video PHY to requested line rate*/
 	PLLRefClkSel (&vphydev->xvphy,linkrate);
 	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
@@ -393,9 +394,11 @@ void DpRxSs_PllResetHandler(void)
 	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			 XVPHY_DIR_RX, (FALSE));
 	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX, (FALSE));
+	hdmi_mutex_lock(&vphydev->xvphy_mutex);
 	XVphy_WaitForResetDone(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			       XVPHY_DIR_RX);
 	XVphy_WaitForPllLock(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA);
+	hdmi_mutex_unlock(&vphydev->xvphy_mutex);
 	
 }
 EXPORT_SYMBOL(DpRxSs_PllResetHandler);
@@ -455,8 +458,10 @@ u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_T
         }
 
 	XVphy_WriteReg(InstancePtr->Config.BaseAddr, XVPHY_PLL_RESET_REG, 0x0);
+
 	Status = XVphy_ResetGtPll(InstancePtr, QuadId,
 				  XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(FALSE));
+	hdmi_mutex_unlock(&vphydev->xvphy_mutex);
 	Status += XVphy_WaitForPmaResetDone(InstancePtr, QuadId,
 					    XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX);
 	Status += XVphy_WaitForPllLock(InstancePtr, QuadId, TxChId);
@@ -467,6 +472,7 @@ u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_T
 		printk("%d %s PLL Lock done failed: Status =%d\n",__LINE__,__func__,Status);
 	}
 
+	hdmi_mutex_unlock(&vphydev->xvphy_mutex);
 	return (Status);
 }
 struct xvphy_dev *vphydev;
@@ -488,6 +494,7 @@ u32 set_vphy(int LineRate_init_tx){
 
         u32 Status=0;
 
+//	dev_dbg(vphydev->dev,"  set_vphy \n");
         switch(LineRate_init_tx){
                 case 1620:
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,
@@ -1127,42 +1134,6 @@ static int xvphy_probe(struct platform_device *pdev)
 	if (ret) return ret;
 	dev_dbg(vphydev->dev,"DT parse done\n");
 
-	for_each_child_of_node(np, child) {
-		struct xvphy_lane *vphy_lane;
-
-		vphy_lane = devm_kzalloc(&pdev->dev, sizeof(*vphy_lane),
-					 GFP_KERNEL);
-		if (!vphy_lane)
-			return -ENOMEM;
-		/* Assign lane number to gtr_phy instance */
-		vphy_lane->lane = index;
-
-		/* Disable lane sharing as default */
-		vphy_lane->share_laneclk = -1;
-
-		BUG_ON(port >= 4);
-		/* array of pointer to vphy_lane structs */
-		vphydev->lanes[port] = vphy_lane;
-
-		/* create phy device for each lane */
-		phy = devm_phy_create(&pdev->dev, child, &xvphy_phyops);
-		if (IS_ERR(phy)) {
-			ret = PTR_ERR(phy);
-			if (ret == -EPROBE_DEFER)
-				dev_info(&pdev->dev, "xvphy probe deferred\n");
-			if (ret != -EPROBE_DEFER)
-				dev_err(&pdev->dev, "failed to create PHY\n");
-			return ret;
-		}
-		/* array of pointer to phy */
-		vphydev->lanes[port]->phy = phy;
-		/* where each phy device has vphy_lane as driver data */
-		phy_set_drvdata(phy, vphydev->lanes[port]);
-		/* and each vphy_lane points back to parent device */
-		vphy_lane->data = vphydev;
-		port++;
-		index++;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	vphydev->iomem = devm_ioremap_resource(&pdev->dev, res);
@@ -1257,7 +1228,42 @@ static int xvphy_probe(struct platform_device *pdev)
 
 	Status = PHY_Configuration_Tx(&vphydev->xvphy,
 				PHY_User_Config_Table[(is_TX_CPLL) ? 2 : 5]);
+	for_each_child_of_node(np, child) {
+		struct xvphy_lane *vphy_lane;
 
+		vphy_lane = devm_kzalloc(&pdev->dev, sizeof(*vphy_lane),
+					 GFP_KERNEL);
+		if (!vphy_lane)
+			return -ENOMEM;
+		/* Assign lane number to gtr_phy instance */
+		vphy_lane->lane = index;
+
+		/* Disable lane sharing as default */
+		vphy_lane->share_laneclk = -1;
+
+		BUG_ON(port >= 4);
+		/* array of pointer to vphy_lane structs */
+		vphydev->lanes[port] = vphy_lane;
+
+		/* create phy device for each lane */
+		phy = devm_phy_create(&pdev->dev, child, &xvphy_phyops);
+		if (IS_ERR(phy)) {
+			ret = PTR_ERR(phy);
+			if (ret == -EPROBE_DEFER)
+				dev_info(&pdev->dev, "xvphy probe deferred\n");
+			if (ret != -EPROBE_DEFER)
+				dev_err(&pdev->dev, "failed to create PHY\n");
+			return ret;
+		}
+		/* array of pointer to phy */
+		vphydev->lanes[port]->phy = phy;
+		/* where each phy device has vphy_lane as driver data */
+		phy_set_drvdata(phy, vphydev->lanes[port]);
+		/* and each vphy_lane points back to parent device */
+		vphy_lane->data = vphydev;
+		port++;
+		index++;
+	}
 	provider = devm_of_phy_provider_register(&pdev->dev, xvphy_xlate);
 	if (IS_ERR(provider)) {
 		dev_err(&pdev->dev, "registering provider failed\n");
