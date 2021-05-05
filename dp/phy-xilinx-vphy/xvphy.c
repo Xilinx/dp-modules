@@ -615,14 +615,12 @@ u32 XVphy_WaitForResetDone(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 	do {
 		RegVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr, RegOffset);
 		Retry++;
-	} while ((!(RegVal & MaskVal)) && (Retry < 260));
+	} while ((!(RegVal & MaskVal)) && (Retry < 255));
 
-	if (Retry == 260){
-		xil_printf("pll reset is failed!! \n\r");
+	if (Retry == 255){
 		return XST_FAILURE;
 	}
 	else {
-		xil_printf("pll reset is success !! \n\r");
 		return XST_SUCCESS;
 	}
 }
@@ -651,8 +649,6 @@ u32 XVphy_WaitForPllLock(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId)
 		Status = XVphy_IsPllLocked(InstancePtr, QuadId, ChId);
 		Retry++;
 	} while ((Status != XST_SUCCESS) && (Retry < 30));
-
-	xil_printf("pll lock status %d \n\r",Status);
 
 	return Status;
 }
