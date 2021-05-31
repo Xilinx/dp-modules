@@ -30,9 +30,8 @@ ccflags-y += -DXPAR_VPHY_0_USE_GT_CH4_HDMI=0
 ccflags-y += -DXPAR_XTMRCTR_NUM_INSTANCES=1
 
 ccflags-y += -I${src}/phy-xilinx-vphy
-CFLAGS_xilinx-dprxss.o += -I$(src)/include/ -Idrivers/media/platform/xilinx/
 
-obj-m += phy-xilinx-vphy.o xilinx_dp.o xilinx_dprxss.o
+obj-m += phy-xilinx-vphy.o
 # top-level Linux driver source
 phy-xilinx-vphy-objs += xfmc/fmc.o 
 phy-xilinx-vphy-objs += xfmc/fmc64.o
@@ -41,9 +40,6 @@ phy-xilinx-vphy-objs += xfmc/idt.o
 phy-xilinx-vphy-objs += xfmc/tipower.o
 phy-xilinx-vphy-objs += xfmc/mcdp6000.o
 phy-xilinx-vphy-objs += phy-vphy.o
-
-xilinx_dp-objs :=xilinx_drm_dp.o 
-xilinx_dprxss-objs :=xilinx-dprxss.o
 
 # the C API around the IP registers
 CFLAGS_phy-vphy.o += -I$(src)/phy-xilinx-vphy/
