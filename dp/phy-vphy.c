@@ -755,16 +755,16 @@ static int xvphy_phy_reset(struct phy *phy)
 }
 static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 {
-	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
-
 	BUG_ON(!phy);
-	if(opts->dp.set_rate && (vphy_lane->direction_tx == 0)) {
+	if(opts->dp.set_rate && opts->dp.direction == PHY_RX_CFG) {
 		DpRxSs_LinkBandwidthHandler(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
+		opts->dp.direction = PHY_NONE;
 	}
-	if(opts->dp.set_rate && (vphy_lane->direction_tx == 1)) {
+	if(opts->dp.set_rate && opts->dp.direction == PHY_TX_CFG) {
 		set_vphy(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
+		opts->dp.direction = PHY_NONE;
 	}
 	if(opts->dp.set_voltages) {
 		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
