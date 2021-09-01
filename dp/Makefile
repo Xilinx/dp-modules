@@ -39,6 +39,7 @@ phy-xilinx-vphy-objs += xfmc/fmc65.o
 phy-xilinx-vphy-objs += xfmc/idt.o
 phy-xilinx-vphy-objs += xfmc/tipower.o
 phy-xilinx-vphy-objs += xfmc/mcdp6000.o
+phy-xilinx-vphy-objs += xfmc/dp141.o
 phy-xilinx-vphy-objs += phy-vphy.o
 
 # the C API around the IP registers
