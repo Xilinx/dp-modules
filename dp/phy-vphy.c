@@ -128,6 +128,7 @@ int fmc65_init(void);
 int IDT_8T49N24x_Init(void);
 int IDT_8T49N24x_Configure(void);
 int tipower_init(void);
+int dp141_init(void);
 int mcdp6000_init(void);
 int idt_init(void);
 void idt_exit(void);
@@ -142,6 +143,9 @@ int fmc65_exit(void);
 
 int tipower_entry(void);
 void tipower_exit(void);
+
+int dp141_entry(void);
+void dp141_exit(void);
 
 int mcdp6000_entry(void);
 void mcdp6000_exit(void);
@@ -1060,6 +1064,7 @@ int xfmc_init(void)
 	fmc64_entry();
 	fmc65_entry();
 	tipower_entry();
+	dp141_entry();
 	mcdp6000_entry();
 	Status = fmc_init();
 	if(Status)
@@ -1090,6 +1095,11 @@ int xfmc_init(void)
 			Status = mcdp6000_init();
         if(Status)
                 printk("vphy: @14  MCDP6000 init failed\n");
+
+	Status = dp141_init();
+	if(Status)
+		printk("vphy: @05  dp141 config failed\n");
+
 
 	return XST_SUCCESS;
 }
