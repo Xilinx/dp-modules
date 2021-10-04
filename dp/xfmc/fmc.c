@@ -69,13 +69,14 @@ static inline int fmc_write_reg(struct fmcs *priv, u16 addr, u8 val)
 	return err;
 }
 
-int fmc_init(void)
+int fmc_init(u8 hpc_connector)
 {
 	int ret = 0;
 
-	ret = fmc_write_reg(fmc, 0x0, 0x7);
+	ret = fmc_write_reg(fmc, 0x0, hpc_connector);
 	if (ret)
 		return 1;
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(fmc_init);
