@@ -122,35 +122,6 @@
 #define hdmi_mutex_lock(x) mutex_lock(x)
 #define hdmi_mutex_unlock(x) mutex_unlock(x)
 
-int fmc_init(void);
-int fmc64_init(void);
-int fmc65_init(void);
-int IDT_8T49N24x_Init(void);
-int IDT_8T49N24x_Configure(void);
-int tipower_init(void);
-int dp141_init(void);
-int mcdp6000_init(void);
-int idt_init(void);
-void idt_exit(void);
-int fmc_entry(void);
-int fmc_exit(void);
-
-int fmc64_entry(void);
-int fmc64_exit(void);
-
-int fmc65_entry(void);
-int fmc65_exit(void);
-
-int tipower_entry(void);
-void tipower_exit(void);
-
-int dp141_entry(void);
-void dp141_exit(void);
-
-int mcdp6000_entry(void);
-void mcdp6000_exit(void);
-
-int IDT_8T49N24x_SetClock(void);
 static void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
 					struct phy_configure_opts_dp *dp);
 typedef enum {
@@ -759,16 +730,16 @@ static int xvphy_phy_reset(struct phy *phy)
 }
 static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 {
-	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
-
 	BUG_ON(!phy);
-	if(opts->dp.set_rate && (vphy_lane->direction_tx == 0)) {
+	if(opts->dp.set_rate && opts->dp.direction == PHY_RX_CFG) {
 		DpRxSs_LinkBandwidthHandler(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
+		opts->dp.direction = PHY_NONE;
 	}
-	if(opts->dp.set_rate && (vphy_lane->direction_tx == 1)) {
+	if(opts->dp.set_rate && opts->dp.direction == PHY_TX_CFG) {
 		set_vphy(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
+		opts->dp.direction = PHY_NONE;
 	}
 	if(opts->dp.set_voltages) {
 		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
@@ -1042,68 +1013,6 @@ static const struct regmap_config fmc_regmap_config = {
         .cache_type = REGCACHE_RBTREE,
 };
 
-
-/*****************************************************************************/
-/**
- * *
- * * This function initializes VFMC.
- * *
- * * @param    None.
- * *
- * * @return    None.
- * *
- * * @note        None.
- * *
- * ******************************************************************************/
-int xfmc_init(void)
-{
-	unsigned int Status=1;
-
-	/* Platform Initialization */
-	fmc_entry();
-	fmc64_entry();
-	fmc65_entry();
-	tipower_entry();
-	dp141_entry();
-	mcdp6000_entry();
-	Status = fmc_init();
-	if(Status)
-		printk("vphy: @75 selection HPC FMC failed\n");
-	Status = fmc64_init();
-        if(Status)
-                printk("vphy: @64 Configure VFMC IO Expander 0 failed\n");
-	Status = fmc65_init();
-	if(Status)
-		printk("vphy: @65 Configure VFMC IO Expander 1 failed\n");
-
-	idt_init();
-	Status = IDT_8T49N24x_Init();
-	if(Status)
-		printk("vphy: @7C IDT init failed\n");
-
-	Status = tipower_init();
-	if(Status)
-		printk("vphy: @50  TI POWER config failed\n");
-
-	Status = IDT_8T49N24x_SetClock();
-	if(Status)
-		printk("vphy: @7C IDT set clock failed\n");
-
-	Status = IDT_8T49N24x_Configure();
-	if(Status)
-	printk("vphy: @7C IDT configure failed\n");
-			Status = mcdp6000_init();
-        if(Status)
-                printk("vphy: @14  MCDP6000 init failed\n");
-
-	Status = dp141_init();
-	if(Status)
-		printk("vphy: @05  dp141 config failed\n");
-
-
-	return XST_SUCCESS;
-}
-
 //struct xvphy_dev *vphydev_g;
 /**
  * xvphy_probe - The device probe function for driver initialization.
@@ -1115,12 +1024,15 @@ static int xvphy_probe(struct platform_device *pdev)
 {
 	struct device_node *child, *np = pdev->dev.of_node;
 	struct phy_provider *provider;
+	struct device_node *fnode;
+	struct platform_device *iface_pdev;
 	struct phy *phy;
 	unsigned long axi_lite_rate;
 	unsigned long drp_clk_rate;
 	unsigned int Status=1;
 	struct resource *res;
 	int port = 0, index = 0;
+	void *ptr;
 	int ret;
 
 	dev_info(&pdev->dev, "xlnx-dp-vphy: probed\n");
@@ -1138,6 +1050,26 @@ static int xvphy_probe(struct platform_device *pdev)
 	BUG_ON(!np);
 
 	XVphy_ConfigTable[instance].DeviceId = VPHY_DEVICE_ID_BASE + instance;
+
+	fnode = of_parse_phandle(np, "xlnx,xilinx-vfmc", 0);
+	if (!fnode) {
+		dev_err(&pdev->dev, "xilinx-vfmc not found in DT\n");
+		of_node_put(fnode);
+	} else {
+		iface_pdev = of_find_device_by_node(fnode);
+		if (!iface_pdev) {
+			of_node_put(np);
+			return -ENODEV;
+		}
+		ptr = dev_get_drvdata(&iface_pdev->dev);
+		if (!ptr) {
+			dev_info(&pdev->dev,
+				 "xilinx-vfmc device not found -EPROBE_DEFER\n");
+			of_node_put(fnode);
+			return -EPROBE_DEFER;
+		}
+		of_node_put(fnode);
+	}
 
 	dev_dbg(vphydev->dev,"DT parse start\n");
 	ret = vphy_parse_of(vphydev, &XVphy_ConfigTable[instance]);
@@ -1198,9 +1130,6 @@ static int xvphy_probe(struct platform_device *pdev)
 	drp_clk_rate = clk_get_rate(vphydev->drp_clk);
 	
 	XVphy_ConfigTable[instance].DrpClkFreq = drp_clk_rate;
-	printk("xfmc_presetn %d \r\n",XVphy_ConfigTable[instance].xfmc_present);
-	if (XVphy_ConfigTable[instance].xfmc_present)
-		xfmc_init();
 	
 	PLLRefClkSel (&vphydev->xvphy, PHY_User_Config_Table[9].LineRate);
 	XVphy_DpInitialize(&vphydev->xvphy,&XVphy_ConfigTable[instance], 0,
