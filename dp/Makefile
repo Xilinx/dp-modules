@@ -31,16 +31,17 @@ ccflags-y += -DXPAR_XTMRCTR_NUM_INSTANCES=1
 
 ccflags-y += -I${src}/phy-xilinx-vphy
 
-obj-m += phy-xilinx-vphy.o
+obj-m += phy-xilinx-vphy.o xilinx-vfmc.o
 # top-level Linux driver source
-phy-xilinx-vphy-objs += xfmc/fmc.o 
-phy-xilinx-vphy-objs += xfmc/fmc64.o
-phy-xilinx-vphy-objs += xfmc/fmc65.o
-phy-xilinx-vphy-objs += xfmc/idt.o
-phy-xilinx-vphy-objs += xfmc/tipower.o
-phy-xilinx-vphy-objs += xfmc/mcdp6000.o
-phy-xilinx-vphy-objs += xfmc/dp141.o
-phy-xilinx-vphy-objs += phy-vphy.o
+phy-xilinx-vphy-objs := phy-vphy.o
+xilinx-vfmc-objs += xfmc/xilinx-vfmc.o
+xilinx-vfmc-objs += xfmc/fmc.o
+xilinx-vfmc-objs += xfmc/fmc64.o
+xilinx-vfmc-objs += xfmc/fmc65.o
+xilinx-vfmc-objs += xfmc/idt.o
+xilinx-vfmc-objs += xfmc/tipower.o
+xilinx-vfmc-objs += xfmc/mcdp6000.o
+xilinx-vfmc-objs += xfmc/dp141.o
 
 # the C API around the IP registers
 CFLAGS_phy-vphy.o += -I$(src)/phy-xilinx-vphy/
