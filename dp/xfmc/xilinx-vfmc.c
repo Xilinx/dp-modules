@@ -58,8 +58,48 @@ void mcdp6000_exit(void);
 int IDT_8T49N24x_SetClock(void);
 int xfmc_init(u8 hpc_connector);
 
+int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(u8 enabled);
+int mcdp6000_access_laneset_callback(void);
+int XDpRxSs_MCDP6000_ClearCounter(void);
+int mcdp6000_rst_dp_path_callback(void);
+int mcdp6000_rst_cr_path_callback(void);
+
 struct x_vfmc_dev {
 	struct device *dev;
+};
+
+static void xvfmc_retimer_prbs_mode(u8 enable)
+{
+	/* Set PRBS mode in Retimer*/
+	XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(enable);
+	XDpRxSs_MCDP6000_ClearCounter();
+}
+static void xvfmc_retimer_access_laneset(void)
+{
+	mcdp6000_access_laneset_callback();
+}
+
+static void xvfmc_retimer_rst_dp_path(void)
+{
+	mcdp6000_rst_dp_path_callback();
+}
+
+static void xvfmc_retimer_rst_cr_path(void)
+{
+	mcdp6000_rst_cr_path_callback();
+}
+struct x_vfmc_cfg {
+	void (*retimer_access_laneset)(void);
+	void (*retimer_rst_dp_path)(void);
+	void (*retimer_rst_cr_path)(void);
+	void (*retimer_set_prbs_mode)(u8 enable);
+};
+
+static struct x_vfmc_cfg retimer_ops = {
+	.retimer_access_laneset = xvfmc_retimer_access_laneset,
+	.retimer_rst_dp_path = xvfmc_retimer_rst_dp_path,
+	.retimer_rst_cr_path = xvfmc_retimer_rst_cr_path,
+	.retimer_set_prbs_mode = xvfmc_retimer_prbs_mode,
 };
 
 int xfmc_init(u8 hpc_connector)
@@ -122,6 +162,7 @@ static int xvfmc_probe(struct platform_device *pdev)
 {
 	int status;
 	struct x_vfmc_dev *xfmcdev;
+	struct x_vfmc_cfg *priv_data;
 	struct device_node *node = pdev->dev.of_node;
 	
 	u8 versal_present;
@@ -129,7 +170,12 @@ static int xvfmc_probe(struct platform_device *pdev)
 	xfmcdev = devm_kzalloc(&pdev->dev, sizeof(*xfmcdev), GFP_KERNEL);
 	if (!xfmcdev)
 		return -ENOMEM;	
+	priv_data = devm_kzalloc(&pdev->dev, sizeof(*priv_data), GFP_KERNEL);
+	if (!priv_data)
+		return -ENOMEM;	
+
 	xfmcdev->dev = &pdev->dev;
+	priv_data = &retimer_ops;
 
 	versal_present =
 		of_property_read_bool(node, "xlnx,versal");
@@ -143,7 +189,7 @@ static int xvfmc_probe(struct platform_device *pdev)
 		dev_err(xfmcdev->dev,
 			"Xilinx Video FMC initialization failed\n");
 	
-	platform_set_drvdata(pdev, xfmcdev);
+	platform_set_drvdata(pdev, priv_data);
 
 	return 0;
 }
