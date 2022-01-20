@@ -165,8 +165,9 @@ struct xvphy_lane {
 	bool pll_lock;
 	/* data is pointer to parent xvphy_dev */
 	void *data;
-	bool direction_tx;
+	bool direction;
 	u32 share_laneclk;
+	struct xvphy_dev *vphydev;
 };
 
 struct xvphy_dev *vphydev_g;
@@ -723,25 +724,30 @@ static int xvphy_phy_init(struct phy *phy)
 }
 static int xvphy_phy_reset(struct phy *phy)
 {
+	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
+
 	BUG_ON(!phy);
-	DpRxSs_PllResetHandler();
+	if (!vphy_lane->direction)
+		DpRxSs_PllResetHandler();
 
 	return 0;
 }
 static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 {
+	struct xvphy_lane *vphy_lane = phy_get_drvdata(phy);
+	struct xvphy_dev *vphydev = vphy_lane->vphydev;
+
 	BUG_ON(!phy);
-	if(opts->dp.set_rate && opts->dp.direction == PHY_RX_CFG) {
+	if(opts->dp.set_rate && !vphy_lane->direction) {
 		DpRxSs_LinkBandwidthHandler(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
-		opts->dp.direction = PHY_NONE;
 	}
-	if(opts->dp.set_rate && opts->dp.direction == PHY_TX_CFG) {
+	if(opts->dp.set_rate && vphy_lane->direction) {
+		dev_dbg(vphydev->dev,"%s:set_rate\n",__func__);
 		set_vphy(opts->dp.link_rate);
 		opts->dp.set_rate = 0;
-		opts->dp.direction = PHY_NONE;
 	}
-	if(opts->dp.set_voltages) {
+	if(opts->dp.set_voltages && vphy_lane->direction){
 		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
 		opts->dp.set_voltages = 0;
 	}
@@ -759,7 +765,6 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 static struct phy *xvphy_xlate(struct device *dev,
 				   struct of_phandle_args *args)
 {
-	struct xvphy_dev *vphydev = dev_get_drvdata(dev);
 	struct xvphy_lane *vphy_lane = NULL;
 	struct device_node *phynode = args->np;
 	int index;
@@ -795,7 +800,7 @@ static struct phy *xvphy_xlate(struct device *dev,
 	vphy_lane->share_laneclk = args->args[2];
 
 	/* get the direction for controller from lanes */
-	vphy_lane->direction_tx = args->args[3];
+	vphy_lane->direction = args->args[3];
 
 	BUG_ON(!vphy_lane->phy);
 	return vphy_lane->phy;
@@ -1180,7 +1185,7 @@ static int xvphy_probe(struct platform_device *pdev)
 		/* Disable lane sharing as default */
 		vphy_lane->share_laneclk = -1;
 
-		BUG_ON(port >= 4);
+		BUG_ON(port >= 8);
 		/* array of pointer to vphy_lane structs */
 		vphydev->lanes[port] = vphy_lane;
 
@@ -1196,6 +1201,7 @@ static int xvphy_probe(struct platform_device *pdev)
 		}
 		/* array of pointer to phy */
 		vphydev->lanes[port]->phy = phy;
+		vphydev->lanes[port]->vphydev = vphydev;
 		/* where each phy device has vphy_lane as driver data */
 		phy_set_drvdata(phy, vphydev->lanes[port]);
 		/* and each vphy_lane points back to parent device */

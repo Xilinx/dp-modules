@@ -36,7 +36,7 @@ struct xvphy_dev {
         int irq;
         /* protects the XVphy baseline against concurrent access */
         struct mutex xvphy_mutex;
-        struct xvphy_lane *lanes[4];
+        struct xvphy_lane *lanes[8];
         /* bookkeeping for the baseline subsystem driver instance */
         XVphy xvphy;
         /* AXI Lite clock drives the clock detector */
