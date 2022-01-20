@@ -124,6 +124,7 @@
 
 static void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
 					struct phy_configure_opts_dp *dp);
+void xvphy_prbs_mode(u8 enable);
 typedef enum {
         ONBOARD_REF_CLK = 1,
         DP159_FORWARDED_CLK = 3,
@@ -143,6 +144,13 @@ typedef struct {
         u64 CPLLRefClkFreqHz;
 } XVphy_User_Config;
 
+struct xvphy_cfg {
+	void (*vidphy_prbs_mode)(u8 enable);
+};
+
+static struct xvphy_cfg xvphy_cfg_data = {
+	.vidphy_prbs_mode = xvphy_prbs_mode,
+};
 
 /**
  * struct xvphy_lane - representation of a lane
@@ -553,6 +561,40 @@ void xvphy_SetTxVoltageSwing (XVphy *InstancePtr, u32 chid, u8 vs)
 	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
 }
 
+void xvphy_prbs_mode(u8 enable)
+{
+	XVphy *InstancePtr = &vphydev->xvphy;
+	u32 DrpVal;
+
+	if (enable) {
+		/* Enable PRBS Mode in Video PHY*/
+		DrpVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr,
+				       XVPHY_RX_CONTROL_REG);
+		DrpVal = DrpVal | 0x10101010;
+		XVphy_WriteReg(InstancePtr->Config.BaseAddr,
+			       XVPHY_RX_CONTROL_REG, DrpVal);
+
+		/* Reset PRBS7 Counters*/
+		DrpVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr,
+				       XVPHY_RX_CONTROL_REG);
+		DrpVal = DrpVal | 0x08080808;
+		XVphy_WriteReg(InstancePtr->Config.BaseAddr,
+			     XVPHY_RX_CONTROL_REG, DrpVal);
+		DrpVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr,
+				       XVPHY_RX_CONTROL_REG);
+		DrpVal = DrpVal & 0xF7F7F7F7;
+		XVphy_WriteReg(InstancePtr->Config.BaseAddr,
+			       XVPHY_RX_CONTROL_REG, DrpVal);
+
+	} else {
+		/* Disable PRBS Mode in Video PHY */
+		DrpVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr,
+				       XVPHY_RX_CONTROL_REG);
+		DrpVal = DrpVal & 0xEFEFEFEF;
+		XVphy_WriteReg(InstancePtr->Config.BaseAddr,
+			       XVPHY_RX_CONTROL_REG, DrpVal);
+	}
+}
 
 /**
  * xvphy__pe_vs_adjust_handler - Calculate and configure pe and vs values
@@ -1031,6 +1073,7 @@ static int xvphy_probe(struct platform_device *pdev)
 	struct phy_provider *provider;
 	struct device_node *fnode;
 	struct platform_device *iface_pdev;
+	struct xvphy_cfg *xvphy_prvdata;
 	struct phy *phy;
 	unsigned long axi_lite_rate;
 	unsigned long drp_clk_rate;
@@ -1049,8 +1092,9 @@ static int xvphy_probe(struct platform_device *pdev)
 	mutex_init(&vphydev->xvphy_mutex);
 
 	vphydev->dev = &pdev->dev;
+	xvphy_prvdata = &xvphy_cfg_data;
 	/* set a pointer to our driver data */
-	platform_set_drvdata(pdev, vphydev);
+	platform_set_drvdata(pdev, xvphy_prvdata);
 
 	BUG_ON(!np);
 
