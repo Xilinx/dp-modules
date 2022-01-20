@@ -45,7 +45,7 @@ struct mcdp6000 {
 };
 
 struct mcdp6000 *mcdp6000;
-
+u32 mcdp6000_rev;
 /*
  * Function declaration
  */
@@ -56,11 +56,22 @@ static inline void msleep_range(unsigned int delay_base)
 
 static inline int mcdp6000_read_reg(struct mcdp6000 *priv, u16 addr, u32 *val)
 {
-	int err;
+	int err, i;
+	u32 data = 0, value;
+	u8 temp;
 
-	err = regmap_read(priv->regmap, addr, (unsigned int *)val);
-	if (err)
+	err = regmap_read(priv->regmap, addr, &value);
+	if (err < 0)
 		dev_dbg(&priv->client->dev, "mcdp6000 :regmap_read failed\n");
+
+	for (i = 0; i < 4; i++) {
+		temp = (value >> (i * 8));
+		data <<= 8;
+		data |= temp;
+	}
+
+	*val = data;
+
 	return err;
 }
 
@@ -69,15 +80,68 @@ static inline int mcdp6000_write_reg(struct mcdp6000 *priv, u16 addr, u32 val)
 	int err;
 
 	err = regmap_write(priv->regmap, addr, val);
-	if (err)
+	if (err < 0)
 		dev_dbg(&priv->client->dev, "mcdp6000 :regmap_write failed\n");
+
 	return err;
 }
 
-int  mcdp6000_access_laneset(void)
+static inline int mcdp6000_modify_reg(struct mcdp6000 *priv, u16 addr, u32 val,
+				      u32 mask)
+{
+	u32 data, err;
+
+	err = mcdp6000_read_reg(priv, addr, &data);
+	/* clear masked bits */
+	data &= ~mask;
+
+	/* update */
+	data |= (val & mask);
+	dev_dbg(&priv->client->dev, " %x",data);
+	err |= mcdp6000_write_reg(priv, addr, data);
+
+	return err;
+}
+
+static int mcdp6000_reset_dp_path(void)
 {
 	int ret = 0;
 
+	ret |= mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E710100);
+	if (ret < 0)
+		dev_dbg(&mcdp6000->client->dev,
+			"mcdp6000 :regmap_modify failed\n");
+
+	ret |= mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700100);
+	if (ret < 0)
+		dev_dbg(&mcdp6000->client->dev,
+			"mcdp6000 :regmap_modify failed\n");
+
+	return ret;
+}
+
+static int mcdp6000_reset_cr_path(void)
+{
+	int ret = 0;
+
+	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00800000, 0x00800000);
+	if (ret < 0)
+		dev_dbg(&mcdp6000->client->dev,
+			"mcdp6000 :regmap_modify failed\n");
+
+	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00000000, 0x00800000);
+	if (ret < 0)
+		dev_dbg(&mcdp6000->client->dev,
+			"mcdp6000 :regmap_modify failed\n");
+
+	return ret;
+}
+
+static int  mcdp6000_access_laneset(void)
+{
+	int ret = 0;
+
+		dev_dbg(&mcdp6000->client->dev,"%s: %d\n",__func__,__LINE__);
 	ret = mcdp6000_write_reg(mcdp6000, 0x5001, 0x01000000);
 	if (ret) {
 		dev_dbg(&mcdp6000->client->dev,
@@ -93,7 +157,88 @@ int  mcdp6000_access_laneset(void)
 	}
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mcdp6000_access_laneset);
+
+int mcdp6000_rst_cr_path_callback(void)
+{
+	int ret = 0;
+
+	dev_dbg(&mcdp6000->client->dev,"mcdp_rev: %x\n",mcdp6000_rev);
+	if (mcdp6000_rev == 0x3200) {
+		dev_dbg(&mcdp6000->client->dev,"%s: 3200 %d\n",__func__,__LINE__);
+		ret = mcdp6000_reset_cr_path();
+		if (ret < 0)
+			dev_dbg(&mcdp6000->client->dev,
+				"mcdp6000 : reset_cr_path failed\n");
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mcdp6000_rst_cr_path_callback);
+
+int mcdp6000_access_laneset_callback(void)
+{
+	int ret = 0;
+
+	if (mcdp6000_rev == 0x2100) {
+		ret = mcdp6000_access_laneset();
+		if (ret < 0)
+			dev_dbg(&mcdp6000->client->dev,
+				"mcdp6000 : mcdp6000_access_laneset failed\n");
+	}
+
+	return ret;
+
+}
+EXPORT_SYMBOL_GPL(mcdp6000_access_laneset_callback);
+
+int mcdp6000_rst_dp_path_callback(void)
+{
+	u32 ret = 0;
+
+	if (mcdp6000_rev == 0x2100) {
+		ret = mcdp6000_reset_dp_path();
+		if (ret < 0)
+			dev_dbg(&mcdp6000->client->dev,
+				"mcdp6000 : mcdp6000_reset_dp_path failed\n");
+	}
+
+	mcdp6000_write_reg(mcdp6000, 0x000a, 0x101e8055);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mcdp6000_rst_dp_path_callback);
+
+int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(u8 enabled)
+{
+	u32 readval, data, err;
+
+	readval = mcdp6000_read_reg(mcdp6000, 0x0614, &data);
+
+	if (mcdp6000_rev == 0x2100) {
+		if (enabled == true) {
+			/* Enable PRBS Mode */
+			err |= mcdp6000_write_reg(mcdp6000, 0x0614, (readval | 0x800));
+		} else {
+			err |= mcdp6000_write_reg(mcdp6000, 0x0614, (readval & ~0xFFFFF7FF));
+		}
+	}
+
+	return 0;
+}
+
+EXPORT_SYMBOL_GPL(XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx);
+
+int XDpRxSs_MCDP6000_ClearCounter(void)
+{
+	u32 read_val;
+
+	/* Enable Symbol Counter Always*/
+	mcdp6000_read_reg(mcdp6000, 0x061c, &read_val);
+	mcdp6000_write_reg(mcdp6000, 0x061c, (read_val & 0xFFFFFFFE));
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(XDpRxSs_MCDP6000_ClearCounter);
 
 int mcdp6000_init(void)
 {
@@ -160,6 +305,7 @@ static int mcdp6000_probe(struct i2c_client *client,
 		return -ENOMEM;
 
 	mutex_init(&mcdp6000->lock);
+	mcdp6000->client = client;
 
 	/* initialize regmap */
 	mcdp6000->regmap = devm_regmap_init_i2c(client,
