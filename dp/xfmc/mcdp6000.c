@@ -62,8 +62,7 @@ static inline void msleep_range(unsigned int delay_base)
 static inline int mcdp6000_read_reg(struct mcdp6000 *priv, u16 addr, u32 *val)
 {
 	int err, i;
-	u32 data = 0, value;
-	u8 temp;
+	u32 value;
 
 	err = regmap_read(priv->regmap, addr, &value);
 	if (err < 0)
@@ -126,12 +125,13 @@ static int mcdp6000_reset_cr_path(void)
 {
 	int ret = 0;
 
-	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00800000, 0x00800000);
+
+	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00008000, 0x00008000);
 	if (ret < 0)
 		dev_dbg(&mcdp6000->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
 
-	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00000000, 0x00800000);
+	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00000000, 0x00008000);
 	if (ret < 0)
 		dev_dbg(&mcdp6000->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
@@ -143,7 +143,7 @@ static int  mcdp6000_access_laneset(void)
 {
 	int ret = 0;
 
-		dev_dbg(&mcdp6000->client->dev,"%s: %d\n",__func__,__LINE__);
+	dev_dbg(&mcdp6000->client->dev,"%s: %d\n",__func__,__LINE__);
 	ret = mcdp6000_write_reg(mcdp6000, 0x5001, 0x01000000);
 	if (ret) {
 		dev_dbg(&mcdp6000->client->dev,
@@ -204,7 +204,7 @@ int mcdp6000_rst_dp_path_callback(void)
 				"mcdp6000 : mcdp6000_reset_dp_path failed\n");
 	}
 
-	mcdp6000_write_reg(mcdp6000, 0x000a, 0x101e8055);
+	mcdp6000_modify_reg(mcdp6000, 0x000a, 0x55000000, 0x55000000);
 
 	return ret;
 }
