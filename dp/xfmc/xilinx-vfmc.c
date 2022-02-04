@@ -90,8 +90,8 @@ static void xvfmc_retimer_rst_cr_path(void)
 }
 struct x_vfmc_cfg {
 	void (*retimer_access_laneset)(void);
-	void (*retimer_rst_dp_path)(void);
 	void (*retimer_rst_cr_path)(void);
+	void (*retimer_rst_dp_path)(void);
 	void (*retimer_set_prbs_mode)(u8 enable);
 };
 
