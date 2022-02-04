@@ -15,6 +15,11 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
+#define SWAP_BYTES(u32Value) ((u32Value & 0x000000FF) << 24)\
+|((u32Value & 0x0000FF00) << 8) \
+|((u32Value & 0x00FF0000) >> 8) \
+|((u32Value & 0xFF000000) >> 24)
+
 /**************************** Type Definitions *******************************/
 
 struct reg_8 {
@@ -64,13 +69,9 @@ static inline int mcdp6000_read_reg(struct mcdp6000 *priv, u16 addr, u32 *val)
 	if (err < 0)
 		dev_dbg(&priv->client->dev, "mcdp6000 :regmap_read failed\n");
 
-	for (i = 0; i < 4; i++) {
-		temp = (value >> (i * 8));
-		data <<= 8;
-		data |= temp;
-	}
+	value = SWAP_BYTES(value);
 
-	*val = data;
+	*val = value;
 
 	return err;
 }
@@ -97,7 +98,8 @@ static inline int mcdp6000_modify_reg(struct mcdp6000 *priv, u16 addr, u32 val,
 
 	/* update */
 	data |= (val & mask);
-	dev_dbg(&priv->client->dev, " %x",data);
+	data = SWAP_BYTES(data);
+
 	err |= mcdp6000_write_reg(priv, addr, data);
 
 	return err;
