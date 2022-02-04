@@ -243,41 +243,108 @@ EXPORT_SYMBOL_GPL(XDpRxSs_MCDP6000_ClearCounter);
 int mcdp6000_init(void)
 {
 	int ret = 0;
+	u32 mcdp6000_bs, rev;
 
-	msleep_range(20);
-	ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1F0000);
-	if (ret)
-		return 1;
+	mcdp6000_read_reg(mcdp6000, 0x1005, &rev);
+	mcdp6000_rev = rev & 0xFF00;
+	mcdp6000_bs = rev & 0x1c;
 
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x8C27, 0x90010000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0C01, 0x242D0F0F);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E710000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0F0F071A);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0xA001, 0x444488CC);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0xC001, 0x1EA8002C);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0xD001, 0x60C30000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x7801, 0x80144713);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0809, 0x000C0000);
-	msleep(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x000B, 0x00000000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x040B, 0x00000000);
-	msleep_range(100);
-	ret = mcdp6000_write_reg(mcdp6000, 0x0C09, 0x00000202);
-	msleep_range(100);
+	dev_info(&mcdp6000->client->dev,
+		 "mcdp6000 : revision no %x bs: %x\n",mcdp6000_rev, mcdp6000_bs);
+
+	if (mcdp6000_rev == 0x2100) {
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1F000000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x8C27, 0x90010000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0C01, 0x242D0F0F);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E710000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0F0F071A);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0xA001, 0x444488CC);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0xC001, 0x1EA8002C);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0xD001, 0x60C30000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x7801, 0x80144713);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0809, 0x000C0000);
+		msleep(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x000B, 0x00000000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x040B, 0x00000000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0C09, 0x00000202);
+		msleep_range(100);
+	} else if (mcdp6000_rev == 0x3100) {
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1f000000);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5e700100);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0xc001, 0x9e2c002c);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x2c09, 0xa5a55555);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0009, 0x06050104);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x7801, 0x80144713);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0xa001, 0x444488cc);
+		msleep_range(100);
+		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0f0f8919);
+		if (mcdp6000_bs == 0x18) {
+			ret = mcdp6000_write_reg(mcdp6000, 0x4023, 0x00050000);
+			msleep_range(100);
+			ret = mcdp6000_write_reg(mcdp6000, 0x4025, 0x00050000);
+		} else if (mcdp6000_bs == 0x8){
+			ret = mcdp6000_write_reg(mcdp6000, 0x4022, 0x00050000);
+			ret = mcdp6000_write_reg(mcdp6000, 0x4024, 0x00050000);
+		}
+		ret = mcdp6000_write_reg(mcdp6000, 0x0816, 0x04847400);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0826, 0x04847400);
+
+	} else if (mcdp6000_rev == 0x3200) {
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x4c02, 0x501a2222);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1f000000);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5e700100);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0f0f8919);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0xd801, 0x01060000);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x6006, 0x11500000);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x7c06, 0x01000000);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0809, 0x66080000);
+		msleep_range(20);
+		ret = mcdp6000_write_reg(mcdp6000, 0x0c09, 0x00000204);
+		msleep_range(20);
+		if (mcdp6000_bs == 0x18) {
+			ret = mcdp6000_write_reg(mcdp6000, 0x4023, 0x00050000);
+			msleep_range(20);
+			ret = mcdp6000_write_reg(mcdp6000, 0x4025, 0x00050000);
+			msleep_range(20);
+		} else if (mcdp6000_bs == 0x8) {
+			ret = mcdp6000_write_reg(mcdp6000, 0x4022, 0x00050000);
+			msleep_range(20);
+			ret = mcdp6000_write_reg(mcdp6000, 0x4024, 0x00050000);
+			msleep_range(20);
+		}
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mcdp6000_init);
