@@ -23,7 +23,7 @@ struct reg_8 {
 };
 
 static const struct regmap_config tipower_regmap_config = {
-	.reg_bits = 16,
+	.reg_bits = 8,
 	.val_bits = 8,
 };
 
@@ -67,10 +67,20 @@ static inline int tipower_read_reg(struct tipowers *priv, u16 addr, u8 *val)
 static inline int tipower_write_reg(struct tipowers *priv, u16 addr, u8 val)
 {
 	int err;
+	u32 rdval;
 
 	err = regmap_write(priv->regmap, addr, val);
 	if (err)
 		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
+
+	err = regmap_read(priv->regmap, addr, &rdval);
+	if (err) {
+		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
+	}
+
+	dev_dbg(&priv->client->dev,
+		"reg_addr = 0x%x, wrval =0x%x, rdval = 0x%x\n",addr, val, rdval);
+
 	return err;
 }
 
@@ -141,6 +151,8 @@ static int tipower_probe(struct i2c_client *client,
 		ret = -ENODEV;
 		goto err_regmap;
 	}
+
+	tipower->client = client;
 
 	dev_info(&client->dev, "tipower : probe success !\n");
 
