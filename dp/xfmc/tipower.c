@@ -89,30 +89,30 @@ int tipower_init(void)
 	int ret = 0;
 
 	msleep_range(20);
-	ret = tipower_write_reg(tipower, 0x29, 0x3);
+	ret = tipower_write_reg(tipower, 29, 0x3);
 	if (ret)
 		return 1;
 
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x31, 0x0);
+	ret = tipower_write_reg(tipower, 31, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x32, 0x0);
+	ret = tipower_write_reg(tipower, 32, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x34, 0x0);
+	ret = tipower_write_reg(tipower, 34, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x35, 0x0);
+	ret = tipower_write_reg(tipower, 35, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x37, 0x0);
+	ret = tipower_write_reg(tipower, 37, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x39, 0x0);
+	ret = tipower_write_reg(tipower, 39, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x41, 0x0);
+	ret = tipower_write_reg(tipower, 41, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x43, 0x0);
+	ret = tipower_write_reg(tipower, 43, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x50, 0xf6);
+	ret = tipower_write_reg(tipower, 50, 0xf6);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x56, 0x1);
+	ret = tipower_write_reg(tipower, 56, 0x1);
 	msleep_range(10);
 
 	return 0;
