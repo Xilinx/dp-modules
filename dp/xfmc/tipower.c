@@ -163,9 +163,8 @@ err_regmap:
 	return ret;
 }
 
-static int tipower_remove(struct i2c_client *client)
+static void tipower_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 static struct i2c_driver tipower_i2c_driver = {

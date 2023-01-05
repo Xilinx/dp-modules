@@ -518,9 +518,8 @@ err_regmap:
 	return ret;
 }
 
-static int idt_remove(struct i2c_client *client)
+static void idt_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 static struct i2c_driver idt_i2c_driver = {

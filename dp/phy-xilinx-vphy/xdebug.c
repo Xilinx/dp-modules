@@ -3,7 +3,7 @@
 * SPDX-License-Identifier: GPL-2.0
 *******************************************************************************/
 #include <linux/kernel.h>
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include "xil_types.h"
 #include "xdebug.h"
 
