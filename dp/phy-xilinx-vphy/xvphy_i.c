@@ -194,7 +194,7 @@ u32 XVphy_WriteCfgRefClkSelReg(XVphy *InstancePtr, u8 QuadId)
 	RegVal = InstancePtr->Quads[QuadId].Cmn0.PllRefClkSel;
 	/* - CPLL. */
 	RegVal &= ~XVPHY_REF_CLK_SEL_CPLL_MASK;
-	RegVal |= (ChPtr->CpllRefClkSel << XVPHY_REF_CLK_SEL_CPLL_SHIFT);
+	RegVal |= (ChPtr->CpllRefClkSel + 1 << XVPHY_REF_CLK_SEL_CPLL_SHIFT);
 	if ((GtType == XVPHY_GT_TYPE_GTHE3) ||
             (GtType == XVPHY_GT_TYPE_GTHE4) ||
             (GtType == XVPHY_GT_TYPE_GTYE4) ||
