@@ -28,7 +28,9 @@ Required Properties:
  - xlnx,rx-no-of-channels: Required Rx channels for registered protocol
  - xlnx,rx-pll-selection: Rx pll selector
  - xlnx,rx-protocol: 1=HDMI, 0=DP (Note: Only HDMI is supported at this time)
- - xlnx,rx-refclk-sel: Reference Rx clock selector
+ - xlnx,rx-refclk-sel: Reference Rx clock selector:
+	value 0 means GTREFCLK0 selected and
+	value 1 means GTREFCLK1 selected.
  - xlnx,tx-no-of-channels: Required Rx channels for registered protocol
  - xlnx,tx-pll-selection = Tx pll selector
  - xlnx,tx-protocol: 1=HDMI, 0=DP (Note: Only HDMI is supported at this time)
