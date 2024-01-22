@@ -489,8 +489,7 @@ static const struct i2c_device_id idt_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, idt_id);
 
-static int idt_probe(struct i2c_client *client,
-		     const struct i2c_device_id *id)
+static int idt_probe(struct i2c_client *client)
 {
 	int ret;
 

@@ -363,8 +363,7 @@ static const struct i2c_device_id mcdp6000_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, mcdp6000_id);
 
-static int mcdp6000_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mcdp6000_probe(struct i2c_client *client)
 {
 	int ret;
 

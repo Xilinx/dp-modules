@@ -131,8 +131,7 @@ static const struct i2c_device_id tipower_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, tipower_id);
 
-static int tipower_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int tipower_probe(struct i2c_client *client)
 {
 	int ret;
 
