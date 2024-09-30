@@ -27,11 +27,11 @@ Required Properties:
  - xlnx,nidru-refclk-sel: DRU clock selector
  - xlnx,rx-no-of-channels: Required Rx channels for registered protocol
  - xlnx,rx-pll-selection: Rx pll selector
- - xlnx,rx-protocol: 1=HDMI, 0=DP (Note: Only HDMI is supported at this time)
+ - xlnx,rx-protocol: 1=HDMI, 0=DP
  - xlnx,rx-refclk-sel: Reference Rx clock selector
  - xlnx,tx-no-of-channels: Required Rx channels for registered protocol
  - xlnx,tx-pll-selection = Tx pll selector
- - xlnx,tx-protocol: 1=HDMI, 0=DP (Note: Only HDMI is supported at this time)
+ - xlnx,tx-protocol: 1=HDMI, 0=DP
  - xlnx,tx-refclk-sel: Reference Rx clock selector
  - xlnx,transceiver-type: GT type. Must be set per GT device used
  - xlnx,tx-buffer-bypass: Flag to indicate buffer bypass logic availability
