@@ -91,8 +91,7 @@ static const struct i2c_device_id fmc65_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, fmc65_id);
 
-static int fmc65_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int fmc65_probe(struct i2c_client *client)
 {
 	int ret;
 
