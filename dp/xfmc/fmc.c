@@ -121,9 +121,8 @@ err_regmap:
 	return ret;
 }
 
-static int fmc_remove(struct i2c_client *client)
+static void fmc_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 static struct i2c_driver fmc_i2c_driver = {

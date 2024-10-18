@@ -23,7 +23,7 @@ struct reg_8 {
 };
 
 static const struct regmap_config tipower_regmap_config = {
-	.reg_bits = 16,
+	.reg_bits = 8,
 	.val_bits = 8,
 };
 
@@ -67,10 +67,20 @@ static inline int tipower_read_reg(struct tipowers *priv, u16 addr, u8 *val)
 static inline int tipower_write_reg(struct tipowers *priv, u16 addr, u8 val)
 {
 	int err;
+	u32 rdval;
 
 	err = regmap_write(priv->regmap, addr, val);
 	if (err)
 		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
+
+	err = regmap_read(priv->regmap, addr, &rdval);
+	if (err) {
+		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
+	}
+
+	dev_dbg(&priv->client->dev,
+		"reg_addr = 0x%x, wrval =0x%x, rdval = 0x%x\n",addr, val, rdval);
+
 	return err;
 }
 
@@ -79,30 +89,30 @@ int tipower_init(void)
 	int ret = 0;
 
 	msleep_range(20);
-	ret = tipower_write_reg(tipower, 0x29, 0x3);
+	ret = tipower_write_reg(tipower, 29, 0x3);
 	if (ret)
 		return 1;
 
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x31, 0x0);
+	ret = tipower_write_reg(tipower, 31, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x32, 0x0);
+	ret = tipower_write_reg(tipower, 32, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x34, 0x0);
+	ret = tipower_write_reg(tipower, 34, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x35, 0x0);
+	ret = tipower_write_reg(tipower, 35, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x37, 0x0);
+	ret = tipower_write_reg(tipower, 37, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x39, 0x0);
+	ret = tipower_write_reg(tipower, 39, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x41, 0x0);
+	ret = tipower_write_reg(tipower, 41, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x43, 0x0);
+	ret = tipower_write_reg(tipower, 43, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x50, 0xf6);
+	ret = tipower_write_reg(tipower, 50, 0xf6);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 0x56, 0x1);
+	ret = tipower_write_reg(tipower, 56, 0x1);
 	msleep_range(10);
 
 	return 0;
@@ -141,6 +151,8 @@ static int tipower_probe(struct i2c_client *client)
 		goto err_regmap;
 	}
 
+	tipower->client = client;
+
 	dev_info(&client->dev, "tipower : probe success !\n");
 
 	return 0;
@@ -150,9 +162,8 @@ err_regmap:
 	return ret;
 }
 
-static int tipower_remove(struct i2c_client *client)
+static void tipower_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 static struct i2c_driver tipower_i2c_driver = {

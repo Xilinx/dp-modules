@@ -393,9 +393,8 @@ err_regmap:
 	return ret;
 }
 
-static int mcdp6000_remove(struct i2c_client *client)
+static void mcdp6000_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 static struct i2c_driver mcdp6000_i2c_driver = {
