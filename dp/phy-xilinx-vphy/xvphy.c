@@ -204,7 +204,6 @@ u32 XVphy_PllInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 
 	/* Set configuration in software. */
 	if (InstancePtr->Config.XcvrType != XVPHY_GT_TYPE_GTPE2) {
-//		xil_printf("it is not XVPHY_GT_TYPE_GTPE2 \n\r");
 		XVphy_CfgPllRefClkSel(InstancePtr, QuadId,
 				XVPHY_CHANNEL_ID_CMNA, QpllRefClkSel);
 		XVphy_CfgPllRefClkSel(InstancePtr, QuadId,
@@ -212,7 +211,6 @@ u32 XVphy_PllInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 	}
 	/* GTP. */
 	else {
-//		xil_printf("it is XVPHY_GT_TYPE_GTPE2 \n\r");
 		XVphy_CfgPllRefClkSel(InstancePtr, QuadId,
 				XVPHY_CHANNEL_ID_CMN0,	QpllRefClkSel);
 		XVphy_CfgPllRefClkSel(InstancePtr, QuadId,
@@ -285,7 +283,7 @@ void XVphy_WaitUs(XVphy *InstancePtr, u32 MicroSeconds)
 	/* Verify arguments. */
 	Xil_AssertVoid(InstancePtr != NULL);
 	Xil_AssertVoid(InstancePtr->IsReady == XIL_COMPONENT_IS_READY);
-	unsigned int i;
+
 	if (MicroSeconds == 0) {
 	xil_printf("retun \n\r");
 		return;
@@ -324,6 +322,7 @@ u32 XVphy_ClkInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_DirectionType Dir)
 {
 	u32 Status;
+
 	Status = XVphy_ClkCalcParams(InstancePtr, QuadId, ChId, Dir, 0);
 	if (Status != XST_SUCCESS) {
 		return Status;
@@ -340,6 +339,7 @@ u32 XVphy_ClkInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 	}
 
 	Status = XVphy_DirReconfig(InstancePtr, QuadId, ChId, Dir);
+
 	return Status;
 }
 #endif
@@ -383,14 +383,13 @@ u32 XVphy_CfgLineRate(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 	u8 Id;
 	u8 Id0;
 	u8 Id1;
-//	xil_printf("QuadId=%d LineRateHz=%d \n\r",QuadId,LineRateHz);
+
 	XVphy_Ch2Ids(InstancePtr, ChId, &Id0, &Id1);
-//	xil_printf("Id0=%d Id1=%d \n\r",Id0,Id1);
 	for (Id = Id0; Id <= Id1; Id++) {
 		InstancePtr->Quads[QuadId].Plls[XVPHY_CH2IDX(Id)].LineRateHz =
 								LineRateHz;
 	}
-//	xil_printf("Id0=%d Id1=%d XVPHY_CH2IDX(Id)=%d \n\r",Id0,Id1,XVPHY_CH2IDX(Id));
+
 	return XST_SUCCESS;
 }
 
@@ -418,11 +417,10 @@ u32 XVphy_CfgQuadRefClkFreq(XVphy *InstancePtr, u8 QuadId,
 	u8 RefClkIndex = RefClkType - XVPHY_PLL_REFCLKSEL_TYPE_GTREFCLK0;
 
 	if (RefClkType > XVPHY_PLL_REFCLKSEL_TYPE_GTGREFCLK) {
-	//	xil_printf("RefClkType is greater \n\r");
 		return XST_FAILURE;
 	}
 	InstancePtr->Quads[QuadId].RefClkHz[RefClkIndex] = FreqHz;
-//	xil_printf("RefClkIndex=%d QuadId=%d FreqHz=%d \n\r",RefClkIndex,QuadId,FreqHz);
+
 	return XST_SUCCESS;
 }
 #endif
@@ -592,7 +590,7 @@ u32 XVphy_WaitForPmaResetDone(XVphy *InstancePtr, u8 QuadId,
 u32 XVphy_WaitForResetDone(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_DirectionType Dir)
 {
-	u32 RegVal,i;
+	u32 RegVal;
 	u32 MaskVal;
 	u32 RegOffset;
 	u8 Retry = 0;
@@ -614,10 +612,13 @@ u32 XVphy_WaitForResetDone(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 	}
 	do {
 		RegVal = XVphy_ReadReg(InstancePtr->Config.BaseAddr, RegOffset);
-		Retry++;
-	} while ((!(RegVal & MaskVal)) && (Retry < 255));
+		if (!(RegVal & MaskVal)){
+			XVphy_WaitUs(InstancePtr, 1000);
+			Retry++;
+		}
+	} while ((!(RegVal & MaskVal)) && (Retry < 15));
 
-	if (Retry == 255){
+	if (Retry == 15){
 		return XST_FAILURE;
 	}
 	else {
@@ -646,9 +647,10 @@ u32 XVphy_WaitForPllLock(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId)
 	u8 Retry = 0;
 
 	do {
+		XVphy_WaitUs(InstancePtr, 1000);
 		Status = XVphy_IsPllLocked(InstancePtr, QuadId, ChId);
 		Retry++;
-	} while ((Status != XST_SUCCESS) && (Retry < 30));
+	} while ((Status != XST_SUCCESS) && (Retry < 15));
 
 	return Status;
 }
