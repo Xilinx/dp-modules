@@ -1143,9 +1143,13 @@ static int xvphy_probe(struct platform_device *pdev)
 	/* the AXI lite clock is used for the clock rate detector */
 	vphydev->axi_lite_clk = devm_clk_get(&pdev->dev, "axi-lite");
 	if (IS_ERR(vphydev->axi_lite_clk)) {
-		dev_info(&pdev->dev, "axi-lite-clk not ready -EPROBE_DEFER\n");
-		return dev_err_probe(&pdev->dev, PTR_ERR(vphydev->axi_lite_clk),
-			     "input clock not found.\n");
+		ret = PTR_ERR(vphydev->axi_lite_clk);
+		vphydev->axi_lite_clk = NULL;
+		if (ret == -EPROBE_DEFER)
+			dev_info(&pdev->dev, "axi-lite-clk not ready -EPROBE_DEFER\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to get the axi lite clk.\n");
+		return ret;
 	}
 	ret = clk_prepare_enable(vphydev->axi_lite_clk);
 	if (ret) {
@@ -1158,9 +1162,13 @@ static int xvphy_probe(struct platform_device *pdev)
 	
 	vphydev->drp_clk = devm_clk_get(&pdev->dev, "drpclk");
 	if (IS_ERR(vphydev->drp_clk)) {
-		dev_info(&pdev->dev, "drp_clk not ready -EPROBE_DEFER\n");
-		return dev_err_probe(&pdev->dev, PTR_ERR(vphydev->drp_clk ),
-				"input clock not found.\n");
+		ret = PTR_ERR(vphydev->drp_clk);
+		vphydev->drp_clk = NULL;
+		if (ret == -EPROBE_DEFER)
+			dev_info(&pdev->dev, "drp_clk not ready -EPROBE_DEFER\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to get the drp clk.\n");
+		return ret;
 	}
 	ret = clk_prepare_enable(vphydev->drp_clk);
 	if (ret) {
