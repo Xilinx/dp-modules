@@ -805,7 +805,7 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
  *
  */
 static struct phy *xvphy_xlate(struct device *dev,
-				   struct of_phandle_args *args)
+				   const struct of_phandle_args *args)
 {
 	struct xvphy_lane *vphy_lane = NULL;
 	struct device_node *phynode = args->np;
