@@ -39,6 +39,7 @@ struct xvphy_dev {
         struct xvphy_lane *lanes[8];
         /* bookkeeping for the baseline subsystem driver instance */
         XVphy xvphy;
+        XVphy_Config *cfg;
         /* AXI Lite clock drives the clock detector */
         struct clk *axi_lite_clk;
 	struct clk *drp_clk;
@@ -46,6 +47,8 @@ struct xvphy_dev {
         /* NI-DRU clock input */
         struct clk *clkp;
         struct regmap *regmap;
+        int inst_id;
+	struct xvphy_cfg *xvphy_prvdata;
 };
 
 

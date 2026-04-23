@@ -29,15 +29,12 @@
 
 /*************************** Variable Declarations ****************************/
 
-#ifndef XPAR_XVPHY_NUM_INSTANCES
-#define XPAR_XVPHY_NUM_INSTANCES 0
-#endif
-
 /**
  * A table of configuration structures containing the configuration information
  * for each Video PHY core in the system.
  */
-extern XVphy_Config XVphy_ConfigTable[XPAR_XVPHY_NUM_INSTANCES];
+extern XVphy_Config *XVphy_ConfigTable;
+extern u32 XVphy_ConfigTableSize;
 
 /**************************** Function Definitions ****************************/
 
@@ -60,7 +57,10 @@ XVphy_Config *XVphy_LookupConfig(u16 DeviceId)
 	XVphy_Config *CfgPtr = NULL;
 	u32 Index;
 
-	for (Index = 0; Index < XPAR_XVPHY_NUM_INSTANCES; Index++) {
+	if (!XVphy_ConfigTable || !XVphy_ConfigTableSize)
+		return NULL;
+
+	for (Index = 0; Index < XVphy_ConfigTableSize; Index++) {
 		if (XVphy_ConfigTable[Index].DeviceId == DeviceId) {
 			CfgPtr = &XVphy_ConfigTable[Index];
 			break;
