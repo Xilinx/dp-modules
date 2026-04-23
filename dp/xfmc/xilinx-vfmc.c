@@ -23,132 +23,60 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/i2c.h>
+#include "fmc.h"
+#include "xstatus.h"
 
-#define VERSAL_HPC0	0x4
-#define ZYNQMP_HPC0	0x7
 
-int fmc_init(u8 hpc_connector);
-int fmc64_init(void);
-int fmc65_init(void);
-int IDT_8T49N24x_Init(void);
-int IDT_8T49N24x_Configure(void);
-int tipower_init(void);
-int dp141_init(void);
-int mcdp6000_init(void);
-int idt_init(void);
-void idt_exit(void);
-int fmc_entry(void);
-void fmc_exit(void);
-
-int fmc64_entry(void);
-int fmc64_exit(void);
-
-int fmc65_entry(void);
-int fmc65_exit(void);
-
-int tipower_entry(void);
-void tipower_exit(void);
-
-int dp141_entry(void);
-int dp141_exit(void);
-
-int mcdp6000_entry(void);
-void mcdp6000_exit(void);
-
-int IDT_8T49N24x_SetClock(void);
-int xfmc_init(u8 hpc_connector);
-
-int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(u8 enabled);
-int mcdp6000_access_laneset_callback(void);
-int XDpRxSs_MCDP6000_ClearCounter(void);
-int mcdp6000_rst_dp_path_callback(void);
-int mcdp6000_rst_cr_path_callback(void);
-
-struct x_vfmc_dev {
-	struct device *dev;
-};
-
-static void xvfmc_retimer_prbs_mode(u8 enable)
+static void xvfmc_retimer_prbs_mode(struct i2c_client *client, u8 enable)
 {
-	/* Set PRBS mode in Retimer*/
-	XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(enable);
-	XDpRxSs_MCDP6000_ClearCounter();
-}
-static void xvfmc_retimer_access_laneset(void)
-{
-	mcdp6000_access_laneset_callback();
+	XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(client, enable);
+	XDpRxSs_MCDP6000_ClearCounter(client);
 }
 
-static void xvfmc_retimer_rst_dp_path(void)
+static void xvfmc_retimer_access_laneset(struct i2c_client *client)
 {
-	mcdp6000_rst_dp_path_callback();
+	mcdp6000_access_laneset_callback(client);
 }
 
-static void xvfmc_retimer_rst_cr_path(void)
+static void xvfmc_retimer_rst_dp_path(struct i2c_client *client)
 {
-	mcdp6000_rst_cr_path_callback();
+	mcdp6000_rst_dp_path_callback(client);
 }
-struct x_vfmc_cfg {
-	void (*retimer_access_laneset)(void);
-	void (*retimer_rst_cr_path)(void);
-	void (*retimer_rst_dp_path)(void);
-	void (*retimer_set_prbs_mode)(u8 enable);
-};
 
-static struct x_vfmc_cfg retimer_ops = {
-	.retimer_access_laneset = xvfmc_retimer_access_laneset,
-	.retimer_rst_dp_path = xvfmc_retimer_rst_dp_path,
-	.retimer_rst_cr_path = xvfmc_retimer_rst_cr_path,
-	.retimer_set_prbs_mode = xvfmc_retimer_prbs_mode,
-};
-
-int xfmc_init(u8 hpc_connector)
+static void xvfmc_retimer_rst_cr_path(struct i2c_client *client)
 {
-	unsigned int Status=1;
+	mcdp6000_rst_cr_path_callback(client);
+}
 
-	/* Platform Initialization */
-	fmc_entry();
-	fmc64_entry();
-	fmc65_entry();
-	tipower_entry();
-	dp141_entry();
-	mcdp6000_entry();
-	Status = fmc_init(hpc_connector);
-	if(Status)
-		printk("vphy: @75 selection HPC FMC failed\n");
-	Status = fmc64_init();
-        if(Status)
-                printk("vphy: @64 Configure VFMC IO Expander 0 failed\n");
-	Status = fmc65_init();
-	if(Status)
-		printk("vphy: @65 Configure VFMC IO Expander 1 failed\n");
+static struct i2c_client *resolve_phandle_to_client(struct device_node *parent,
+						    const char *prop)
+{
+	struct device_node *node;
+	struct i2c_client  *client = NULL;
 
-	idt_init();
-	Status = IDT_8T49N24x_Init();
-	if(Status)
-		printk("vphy: @7C IDT init failed\n");
+	node = of_parse_phandle(parent, prop, 0);
+	if (node) {
+		client = of_find_i2c_device_by_node(node);
+		of_node_put(node);
+	}
+	return client;
+}
 
-	Status = tipower_init();
-	if(Status)
-		printk("vphy: @50  TI POWER config failed\n");
+int xfmc_init(struct x_vfmc_dev *xfmcdev)
+{
+	int status = 0;
 
-	Status = IDT_8T49N24x_SetClock();
-	if(Status)
-		printk("vphy: @7C IDT set clock failed\n");
+	status |= fmc64_init(xfmcdev->fmc64_client);
+	status |= fmc65_init(xfmcdev->fmc65_client);
+	status |= IDT_8T49N24x_Init(xfmcdev->idt_client);
+	status |= tipower_init(xfmcdev->tipower_client);
+	status |= IDT_8T49N24x_SetClock(xfmcdev->idt_client);
+	status |= IDT_8T49N24x_Configure(xfmcdev->idt_client);
+	status |= mcdp6000_init(xfmcdev->mcdp6000_client);
+	status |= dp141_init(xfmcdev->dp141_client);
 
-	Status = IDT_8T49N24x_Configure();
-	if(Status)
-	printk("vphy: @7C IDT configure failed\n");
-			Status = mcdp6000_init();
-        if(Status)
-                printk("vphy: @14  MCDP6000 init failed\n");
-
-	Status = dp141_init();
-	if(Status)
-		printk("vphy: @05  dp141 config failed\n");
-
-
-	return 0;
+	return status;
 }
 EXPORT_SYMBOL_GPL(xfmc_init);
 
@@ -160,37 +88,53 @@ EXPORT_SYMBOL_GPL(xfmc_init);
  */
 static int xvfmc_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
+	struct x_vfmc_dev  *xfmcdev;
+	struct x_vfmc_cfg  *cfg;
 	int status;
-	struct x_vfmc_dev *xfmcdev;
-	struct x_vfmc_cfg *priv_data;
-	struct device_node *node = pdev->dev.of_node;
-	
-	u8 versal_present;
 
 	xfmcdev = devm_kzalloc(&pdev->dev, sizeof(*xfmcdev), GFP_KERNEL);
 	if (!xfmcdev)
-		return -ENOMEM;	
-	priv_data = devm_kzalloc(&pdev->dev, sizeof(*priv_data), GFP_KERNEL);
-	if (!priv_data)
-		return -ENOMEM;	
+		return -ENOMEM;
+
+	cfg = devm_kzalloc(&pdev->dev, sizeof(*cfg), GFP_KERNEL);
+	if (!cfg)
+		return -ENOMEM;
 
 	xfmcdev->dev = &pdev->dev;
-	priv_data = &retimer_ops;
 
-	versal_present =
-		of_property_read_bool(node, "xlnx,versal");
-	
-	if (versal_present)
-		status = xfmc_init(VERSAL_HPC0);
-	else
-		status = xfmc_init(ZYNQMP_HPC0);
-	
-	if (status)
-		dev_err(xfmcdev->dev,
-			"Xilinx Video FMC initialization failed\n");
-	
-	platform_set_drvdata(pdev, priv_data);
+	xfmcdev->fmc64_client    = resolve_phandle_to_client(np, "xlnx,fmc64");
+	xfmcdev->fmc65_client    = resolve_phandle_to_client(np, "xlnx,fmc65");
+	xfmcdev->idt_client      = resolve_phandle_to_client(np, "xlnx,idt");
+	xfmcdev->tipower_client  = resolve_phandle_to_client(np, "xlnx,tipower");
+	xfmcdev->mcdp6000_client = resolve_phandle_to_client(np, "xlnx,mcdp6000");
+	xfmcdev->dp141_client    = resolve_phandle_to_client(np, "xlnx,dp141");
 
+	if (!xfmcdev->fmc64_client  ||
+	    !xfmcdev->fmc65_client || !xfmcdev->idt_client     ||
+	    !xfmcdev->tipower_client || !xfmcdev->mcdp6000_client ||
+	    !xfmcdev->dp141_client) {
+		dev_info(&pdev->dev,
+			 "I2C clients not yet probed - deferring\n");
+		return -EPROBE_DEFER;
+	}
+
+	cfg->mcdp6000_client        = xfmcdev->mcdp6000_client;
+	cfg->retimer_rst_dp_path    = xvfmc_retimer_rst_dp_path;
+	cfg->retimer_rst_cr_path    = xvfmc_retimer_rst_cr_path;
+	cfg->retimer_access_laneset = xvfmc_retimer_access_laneset;
+	cfg->retimer_set_prbs_mode  = xvfmc_retimer_prbs_mode;
+
+	platform_set_drvdata(pdev, cfg);
+
+	status = xfmc_init(xfmcdev);
+	if (status) {
+		dev_err(&pdev->dev, "FMC initialization failed with errror: %d\n",status);
+		dev_err(&pdev->dev, "xilinx-vfmc probe failed\n");
+		return status;
+	}
+
+	dev_info(&pdev->dev, "xilinx-vfmc probed successfully\n");
 	return 0;
 }
 
@@ -208,7 +152,70 @@ static struct platform_driver xvfmc_driver = {
 		.of_match_table	= xvfmc_of_match,
 	},
 };
-module_platform_driver(xvfmc_driver);
+
+static int __init xvfmc_module_init(void)
+{
+	int ret;
+
+	ret = fmc64_entry();
+	if (ret)
+		goto err_fmc64;
+
+	ret = fmc65_entry();
+	if (ret)
+		goto err_fmc65;
+
+	ret = tipower_entry();
+	if (ret)
+		goto err_tipower;
+
+	ret = dp141_entry();
+	if (ret)
+		goto err_dp141;
+
+	ret = mcdp6000_entry();
+	if (ret)
+		goto err_mcdp6000;
+
+	ret = idt_entry();
+	if (ret)
+		goto err_idt;
+
+	ret = platform_driver_register(&xvfmc_driver);
+	if (ret)
+		goto err_platform;
+
+	return 0;
+
+err_platform:
+	idt_exit();
+err_idt:
+	mcdp6000_exit();
+err_mcdp6000:
+	dp141_exit();
+err_dp141:
+	tipower_exit();
+err_tipower:
+	fmc65_exit();
+err_fmc65:
+	fmc64_exit();
+err_fmc64:
+	return ret;
+}
+
+static void __exit xvfmc_module_exit(void)
+{
+	platform_driver_unregister(&xvfmc_driver);
+	idt_exit();
+	mcdp6000_exit();
+	dp141_exit();
+	tipower_exit();
+	fmc65_exit();
+	fmc64_exit();
+}
+
+module_init(xvfmc_module_init);
+module_exit(xvfmc_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Leon Woestenberg <leon@sidebranch.com>");

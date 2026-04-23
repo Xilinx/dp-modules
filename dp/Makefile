@@ -30,6 +30,7 @@ ccflags-y += -DXPAR_VPHY_0_USE_GT_CH4_HDMI=0
 ccflags-y += -DXPAR_XTMRCTR_NUM_INSTANCES=1
 
 ccflags-y += -I${src}/phy-xilinx-vphy
+ccflags-y += -I$(src)/xfmc
 
 obj-m += phy-xilinx-vphy.o xilinx-vfmc.o
 # top-level Linux driver source

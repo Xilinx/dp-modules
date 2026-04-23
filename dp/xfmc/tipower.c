@@ -14,7 +14,7 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-
+#include "fmc.h"
 /**************************** Type Definitions *******************************/
 
 struct reg_8 {
@@ -44,7 +44,6 @@ struct tipowers {
 	u32 mode_index;
 };
 
-struct tipowers *tipower;
 
 /*
  * Function declaration
@@ -60,7 +59,7 @@ static inline int tipower_read_reg(struct tipowers *priv, u16 addr, u8 *val)
 
 	err = regmap_read(priv->regmap, addr, (unsigned int *)val);
 	if (err)
-		dev_dbg(&priv->client->dev, "tipower :regmap_read failed\n");
+		dev_err(&priv->client->dev, "tipower :regmap_read failed\n");
 	return err;
 }
 
@@ -69,14 +68,15 @@ static inline int tipower_write_reg(struct tipowers *priv, u16 addr, u8 val)
 	int err;
 	u32 rdval;
 
-	err = regmap_write(priv->regmap, addr, val);
-	if (err)
-		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
-
-	err = regmap_read(priv->regmap, addr, &rdval);
-	if (err) {
-		dev_dbg(&priv->client->dev, "tipower :regmap_write failed\n");
-	}
+	int retry = 0;
+        do {
+                err = regmap_write(priv->regmap, addr, val);
+                if (err) {
+			retry++;
+                        dev_err(&priv->client->dev, "TIPOWER I2C write failed, addr = %x val = %x Retry: %d\n", addr,val,retry);
+                        msleep_range(30);
+                }
+        }while (err && retry < I2C_RETRY_COUNT);
 
 	dev_dbg(&priv->client->dev,
 		"reg_addr = 0x%x, wrval =0x%x, rdval = 0x%x\n",addr, val, rdval);
@@ -84,38 +84,46 @@ static inline int tipower_write_reg(struct tipowers *priv, u16 addr, u8 val)
 	return err;
 }
 
-int tipower_init(void)
+int tipower_init(struct i2c_client *client)
 {
+	struct tipowers *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
+	if (!priv)
+		return -ENODEV;
 	msleep_range(20);
-	ret = tipower_write_reg(tipower, 29, 0x3);
-	if (ret)
+	ret = tipower_write_reg(priv, 29, 0x3);
+	if (ret) {
+		dev_err(&priv->client->dev, "TIPower Init failed\n");
 		return 1;
+	}
 
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 31, 0x0);
+	ret |= tipower_write_reg(priv, 31, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 32, 0x0);
+	ret |= tipower_write_reg(priv, 32, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 34, 0x0);
+	ret |= tipower_write_reg(priv, 34, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 35, 0x0);
+	ret |= tipower_write_reg(priv, 35, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 37, 0x0);
+	ret |= tipower_write_reg(priv, 37, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 39, 0x0);
+	ret |= tipower_write_reg(priv, 39, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 41, 0x0);
+	ret |= tipower_write_reg(priv, 41, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 43, 0x0);
+	ret |= tipower_write_reg(priv, 43, 0x0);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 50, 0xf6);
+	ret |= tipower_write_reg(priv, 50, 0xf6);
 	msleep_range(10);
-	ret = tipower_write_reg(tipower, 56, 0x1);
+	ret |= tipower_write_reg(priv, 56, 0x1);
 	msleep_range(10);
 
-	return 0;
+	if (ret)
+		dev_err(&priv->client->dev, "TIPower Init failed\n");
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(tipower_init);
 
@@ -135,30 +143,30 @@ static int tipower_probe(struct i2c_client *client)
 {
 	int ret;
 
-	/* initialize tipower */
-	tipower = devm_kzalloc(&client->dev, sizeof(*tipower), GFP_KERNEL);
-	if (!tipower)
+	struct tipowers *priv;
+
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&tipower->lock);
+	priv->client = client;
+	mutex_init(&priv->lock);
 
-	/* initialize regmap */
-	tipower->regmap = devm_regmap_init_i2c(client, &tipower_regmap_config);
-	if (IS_ERR(tipower->regmap)) {
+	priv->regmap = devm_regmap_init_i2c(client, &tipower_regmap_config);
+	if (IS_ERR(priv->regmap)) {
 		dev_err(&client->dev,
-			"regmap init failed: %ld\n", PTR_ERR(tipower->regmap));
+			"regmap init failed: %ld\n", PTR_ERR(priv->regmap));
 		ret = -ENODEV;
 		goto err_regmap;
 	}
 
-	tipower->client = client;
-
-	dev_info(&client->dev, "tipower : probe success !\n");
-
+	i2c_set_clientdata(client, priv);
+	dev_info(&client->dev, "tipower probed on adapter '%s'\n",
+		 client->adapter->name);
 	return 0;
 
 err_regmap:
-	mutex_destroy(&tipower->lock);
+	mutex_destroy(&priv->lock);
 	return ret;
 }
 

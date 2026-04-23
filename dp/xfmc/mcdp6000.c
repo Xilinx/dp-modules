@@ -14,6 +14,8 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include "fmc.h"
+#include "xstatus.h"
 
 #define SWAP_BYTES(u32Value) ((u32Value & 0x000000FF) << 24)\
 |((u32Value & 0x0000FF00) << 8) \
@@ -39,6 +41,8 @@ static const struct regmap_config mcdp6000_regmap_config = {
  * @regmap: Pointer to regmap structure
  * @lock: Mutex structure
  * @mode_index: Resolution mode index
+ * @rev: chip revision
+ * @bs: Chip build status
  */
 struct mcdp6000 {
 	struct i2c_client *client;
@@ -47,10 +51,10 @@ struct mcdp6000 {
 	/* mutex for serializing operations */
 	struct mutex lock;
 	u32 mode_index;
+	u32 rev;
+	u32 bs;
 };
 
-struct mcdp6000 *mcdp6000;
-u32 mcdp6000_rev;
 /*
  * Function declaration
  */
@@ -66,7 +70,7 @@ static inline int mcdp6000_read_reg(struct mcdp6000 *priv, u16 addr, u32 *val)
 
 	err = regmap_read(priv->regmap, addr, &value);
 	if (err < 0)
-		dev_dbg(&priv->client->dev, "mcdp6000 :regmap_read failed\n");
+		dev_err(&priv->client->dev, "mcdp6000 :regmap_read failed\n");
 
 	value = SWAP_BYTES(value);
 
@@ -79,9 +83,15 @@ static inline int mcdp6000_write_reg(struct mcdp6000 *priv, u16 addr, u32 val)
 {
 	int err;
 
-	err = regmap_write(priv->regmap, addr, val);
-	if (err < 0)
-		dev_dbg(&priv->client->dev, "mcdp6000 :regmap_write failed\n");
+	int retry = 0;
+	do {
+		err = regmap_write(priv->regmap, addr, val);
+		if (err) {
+			retry++;
+			dev_err(&priv->client->dev, "MCDP6000 I2C write failed, addr = %x val = %x Retry: %d\n", addr,val,retry);
+			msleep_range(30);
+		}
+	}while (err && retry < I2C_RETRY_COUNT);
 
 	return err;
 }
@@ -104,72 +114,92 @@ static inline int mcdp6000_modify_reg(struct mcdp6000 *priv, u16 addr, u32 val,
 	return err;
 }
 
-static int mcdp6000_reset_dp_path(void)
+static int mcdp6000_get_revision(struct mcdp6000 *priv,
+				 u32 *mcdp6000_rev, u32 *mcdp6000_bs)
+{
+	int ret = 0;
+	u32 rev;
+
+	ret = mcdp6000_read_reg(priv, 0x1005, &rev);
+	if (ret == XST_SUCCESS) {
+		*mcdp6000_rev = rev & 0xFF00;;
+		*mcdp6000_bs = rev & 0x1c;
+	} else {
+		*mcdp6000_rev = 0;
+		*mcdp6000_bs = 0;
+	}
+	return ret;
+}
+
+static int mcdp6000_reset_dp_path(struct mcdp6000 *priv)
 {
 	int ret = 0;
 
-	ret |= mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E710100);
+	ret |= mcdp6000_write_reg(priv, 0x0405, 0x5E710100);
 	if (ret < 0)
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
 
-	ret |= mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700100);
+	ret |= mcdp6000_write_reg(priv, 0x0405, 0x5E700100);
 	if (ret < 0)
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
 
 	return ret;
 }
 
-static int mcdp6000_reset_cr_path(void)
+static int mcdp6000_reset_cr_path(struct mcdp6000 *priv)
 {
 	int ret = 0;
 
-
-	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00008000, 0x00008000);
+	ret |= mcdp6000_modify_reg(priv, 0x5001, 0x00008000, 0x00008000);
 	if (ret < 0)
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
 
-	ret |= mcdp6000_modify_reg(mcdp6000, 0x5001, 0x00000000, 0x00008000);
+	ret |= mcdp6000_modify_reg(priv, 0x5001, 0x00000000, 0x00008000);
 	if (ret < 0)
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_modify failed\n");
 
 	return ret;
 }
 
-static int  mcdp6000_access_laneset(void)
+static int mcdp6000_access_laneset(struct mcdp6000 *priv)
 {
 	int ret = 0;
 
-	dev_dbg(&mcdp6000->client->dev,"%s: %d\n",__func__,__LINE__);
-	ret = mcdp6000_write_reg(mcdp6000, 0x5001, 0x01000000);
+	dev_dbg(&priv->client->dev, "%s: %d\n", __func__, __LINE__);
+	ret = mcdp6000_write_reg(priv, 0x5001, 0x01000000);
 	if (ret) {
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_write failed\n");
 		return 1;
 	}
 
-	ret = mcdp6000_write_reg(mcdp6000, 0x5001, 0x00000000);
+	ret = mcdp6000_write_reg(priv, 0x5001, 0x00000000);
 	if (ret) {
-		dev_dbg(&mcdp6000->client->dev,
+		dev_err(&priv->client->dev,
 			"mcdp6000 :regmap_write failed\n");
 		return 1;
 	}
 	return 0;
 }
 
-int mcdp6000_rst_cr_path_callback(void)
+int mcdp6000_rst_cr_path_callback(struct i2c_client *client)
 {
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
-	dev_dbg(&mcdp6000->client->dev,"mcdp_rev: %x\n",mcdp6000_rev);
-	if (mcdp6000_rev == 0x3200) {
-		dev_dbg(&mcdp6000->client->dev,"%s: 3200 %d\n",__func__,__LINE__);
-		ret = mcdp6000_reset_cr_path();
+	if (!priv)
+		return -ENODEV;
+
+	dev_dbg(&priv->client->dev, "mcdp_rev: %x\n", priv->rev);
+	if (priv->rev == 0x3200) {
+		dev_dbg(&priv->client->dev, "%s: 3200 %d\n", __func__, __LINE__);
+		ret = mcdp6000_reset_cr_path(priv);
 		if (ret < 0)
-			dev_dbg(&mcdp6000->client->dev,
+			dev_err(&priv->client->dev,
 				"mcdp6000 : reset_cr_path failed\n");
 	}
 
@@ -177,177 +207,191 @@ int mcdp6000_rst_cr_path_callback(void)
 }
 EXPORT_SYMBOL_GPL(mcdp6000_rst_cr_path_callback);
 
-int mcdp6000_access_laneset_callback(void)
+int mcdp6000_access_laneset_callback(struct i2c_client *client)
 {
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
-	if (mcdp6000_rev == 0x2100) {
-		ret = mcdp6000_access_laneset();
+	if (!priv)
+		return -ENODEV;
+
+	if (priv->rev == 0x2100) {
+		ret = mcdp6000_access_laneset(priv);
 		if (ret < 0)
-			dev_dbg(&mcdp6000->client->dev,
+			dev_dbg(&priv->client->dev,
 				"mcdp6000 : mcdp6000_access_laneset failed\n");
 	}
 
 	return ret;
-
 }
 EXPORT_SYMBOL_GPL(mcdp6000_access_laneset_callback);
 
-int mcdp6000_rst_dp_path_callback(void)
+int mcdp6000_rst_dp_path_callback(struct i2c_client *client)
 {
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
 	u32 ret = 0;
 
-	if (mcdp6000_rev == 0x2100) {
-		ret = mcdp6000_reset_dp_path();
+	if (!priv)
+		return -ENODEV;
+
+	if (priv->rev == 0x2100) {
+		ret = mcdp6000_reset_dp_path(priv);
 		if (ret < 0)
-			dev_dbg(&mcdp6000->client->dev,
+			dev_dbg(&priv->client->dev,
 				"mcdp6000 : mcdp6000_reset_dp_path failed\n");
 	}
 
-	mcdp6000_modify_reg(mcdp6000, 0x000a, 0x55000000, 0x55000000);
+	mcdp6000_modify_reg(priv, 0x000a, 0x55000000, 0x55000000);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mcdp6000_rst_dp_path_callback);
 
-int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(u8 enabled)
+int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(struct i2c_client *client,
+					    u8 enabled)
 {
-	u32 readval, data, err;
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
+	u32 readval, data, err = 0;
 
-	readval = mcdp6000_read_reg(mcdp6000, 0x0614, &data);
+	if (!priv)
+		return -ENODEV;
+	mcdp6000_read_reg(priv, 0x0614, &data);
+	readval = data;
 
-	if (mcdp6000_rev == 0x2100) {
+	if (priv->rev == 0x2100) {
 		if (enabled == true) {
 			/* Enable PRBS Mode */
-			err |= mcdp6000_write_reg(mcdp6000, 0x0614, (readval | 0x800));
+			err |= mcdp6000_write_reg(priv, 0x0614, (readval | 0x800));
 		} else {
-			err |= mcdp6000_write_reg(mcdp6000, 0x0614, (readval & ~0xFFFFF7FF));
+			err |= mcdp6000_write_reg(priv, 0x0614, (readval & ~0xFFFFF7FF));
 		}
 	}
 
 	return 0;
 }
-
 EXPORT_SYMBOL_GPL(XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx);
 
-int XDpRxSs_MCDP6000_ClearCounter(void)
+int XDpRxSs_MCDP6000_ClearCounter(struct i2c_client *client)
 {
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
 	u32 read_val;
 
-	/* Enable Symbol Counter Always*/
-	mcdp6000_read_reg(mcdp6000, 0x061c, &read_val);
-	mcdp6000_write_reg(mcdp6000, 0x061c, (read_val & 0xFFFFFFFE));
+	if (!priv)
+		return -ENODEV;
+	/* Enable Symbol Counter Always */
+	mcdp6000_read_reg(priv, 0x061c, &read_val);
+	mcdp6000_write_reg(priv, 0x061c, (read_val & 0xFFFFFFFE));
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(XDpRxSs_MCDP6000_ClearCounter);
 
-int mcdp6000_init(void)
+int mcdp6000_init(struct i2c_client *client)
 {
+	struct mcdp6000 *priv = i2c_get_clientdata(client);
 	int ret = 0;
-	u32 mcdp6000_bs, rev;
 
-	mcdp6000_read_reg(mcdp6000, 0x1005, &rev);
-	mcdp6000_rev = rev & 0xFF00;
-	mcdp6000_bs = rev & 0x1c;
+	if (!priv)
+		return -ENODEV;
 
-	dev_info(&mcdp6000->client->dev,
-		 "mcdp6000 : revision no %x bs: %x\n",mcdp6000_rev, mcdp6000_bs);
-
-	if (mcdp6000_rev == 0x2100) {
+	if (priv->rev == 0x2100) {
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1F000000);
+		ret |= mcdp6000_write_reg(priv, 0x5003, 0x1F000000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
+		ret |= mcdp6000_write_reg(priv, 0x0405, 0x5E700000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x8C27, 0x90010000);
+		ret |= mcdp6000_write_reg(priv, 0x8C27, 0x90010000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0C01, 0x242D0F0F);
+		ret |= mcdp6000_write_reg(priv, 0x0C01, 0x242D0F0F);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E710000);
+		ret |= mcdp6000_write_reg(priv, 0x0405, 0x5E710000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5E700000);
+		ret |= mcdp6000_write_reg(priv, 0x0405, 0x5E700000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0F0F071A);
+		ret |= mcdp6000_write_reg(priv, 0x1426, 0x0F0F071A);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0xA001, 0x444488CC);
+		ret |= mcdp6000_write_reg(priv, 0xA001, 0x444488CC);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0xC001, 0x1EA8002C);
+		ret |= mcdp6000_write_reg(priv, 0xC001, 0x1EA8002C);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0xD001, 0x60C30000);
+		ret |= mcdp6000_write_reg(priv, 0xD001, 0x60C30000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x7801, 0x80144713);
+		ret |= mcdp6000_write_reg(priv, 0x7801, 0x80144713);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0809, 0x000C0000);
+		ret |= mcdp6000_write_reg(priv, 0x0809, 0x000C0000);
 		msleep(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x000B, 0x00000000);
+		ret |= mcdp6000_write_reg(priv, 0x000B, 0x00000000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x040B, 0x00000000);
+		ret |= mcdp6000_write_reg(priv, 0x040B, 0x00000000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0C09, 0x00000202);
+		ret |= mcdp6000_write_reg(priv, 0x0C09, 0x00000202);
 		msleep_range(100);
-	} else if (mcdp6000_rev == 0x3100) {
+	} else if (priv->rev == 0x3100) {
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1f000000);
+		ret |= mcdp6000_write_reg(priv, 0x5003, 0x1f000000);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5e700100);
+		ret |= mcdp6000_write_reg(priv, 0x0405, 0x5e700100);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0xc001, 0x9e2c002c);
+		ret |= mcdp6000_write_reg(priv, 0xc001, 0x9e2c002c);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x2c09, 0xa5a55555);
+		ret |= mcdp6000_write_reg(priv, 0x2c09, 0xa5a55555);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0009, 0x06050104);
+		ret |= mcdp6000_write_reg(priv, 0x0009, 0x06050104);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x7801, 0x80144713);
+		ret |= mcdp6000_write_reg(priv, 0x7801, 0x80144713);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0xa001, 0x444488cc);
+		ret |= mcdp6000_write_reg(priv, 0xa001, 0x444488cc);
 		msleep_range(100);
-		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0f0f8919);
-		if (mcdp6000_bs == 0x18) {
-			ret = mcdp6000_write_reg(mcdp6000, 0x4023, 0x00050000);
+		ret |= mcdp6000_write_reg(priv, 0x1426, 0x0f0f8919);
+		if (priv->bs == 0x18) {
+			ret |= mcdp6000_write_reg(priv, 0x4023, 0x00050000);
 			msleep_range(100);
-			ret = mcdp6000_write_reg(mcdp6000, 0x4025, 0x00050000);
-		} else if (mcdp6000_bs == 0x8){
-			ret = mcdp6000_write_reg(mcdp6000, 0x4022, 0x00050000);
-			ret = mcdp6000_write_reg(mcdp6000, 0x4024, 0x00050000);
+			ret |= mcdp6000_write_reg(priv, 0x4025, 0x00050000);
+		} else if (priv->bs == 0x8) {
+			ret |= mcdp6000_write_reg(priv, 0x4022, 0x00050000);
+			ret |= mcdp6000_write_reg(priv, 0x4024, 0x00050000);
 		}
-		ret = mcdp6000_write_reg(mcdp6000, 0x0816, 0x04847400);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0826, 0x04847400);
+		ret |= mcdp6000_write_reg(priv, 0x0816, 0x04847400);
+		ret |= mcdp6000_write_reg(priv, 0x0826, 0x04847400);
 
-	} else if (mcdp6000_rev == 0x3200) {
+	} else if (priv->rev == 0x3200) {
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x4c02, 0x501a2222);
+		ret |= mcdp6000_write_reg(priv, 0x4c02, 0x501a2222);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x5003, 0x1f000000);
+		ret |= mcdp6000_write_reg(priv, 0x5003, 0x1f000000);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0405, 0x5e700100);
+		ret |= mcdp6000_write_reg(priv, 0x0405, 0x5e700100);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x1426, 0x0f0f8919);
+		ret |= mcdp6000_write_reg(priv, 0x1426, 0x0f0f8919);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0xd801, 0x01060000);
+		ret |= mcdp6000_write_reg(priv, 0xd801, 0x01060000);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x6006, 0x11500000);
+		ret |= mcdp6000_write_reg(priv, 0x6006, 0x11500000);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x7c06, 0x01000000);
+		ret |= mcdp6000_write_reg(priv, 0x7c06, 0x01000000);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0809, 0x66080000);
+		ret |= mcdp6000_write_reg(priv, 0x0809, 0x66080000);
 		msleep_range(20);
-		ret = mcdp6000_write_reg(mcdp6000, 0x0c09, 0x00000204);
+		ret |= mcdp6000_write_reg(priv, 0x0c09, 0x00000204);
 		msleep_range(20);
-		if (mcdp6000_bs == 0x18) {
-			ret = mcdp6000_write_reg(mcdp6000, 0x4023, 0x00050000);
+		if (priv->bs == 0x18) {
+			ret |= mcdp6000_write_reg(priv, 0x4023, 0x00050000);
 			msleep_range(20);
-			ret = mcdp6000_write_reg(mcdp6000, 0x4025, 0x00050000);
+			ret |= mcdp6000_write_reg(priv, 0x4025, 0x00050000);
 			msleep_range(20);
-		} else if (mcdp6000_bs == 0x8) {
-			ret = mcdp6000_write_reg(mcdp6000, 0x4022, 0x00050000);
+		} else if (priv->bs == 0x8) {
+			ret |= mcdp6000_write_reg(priv, 0x4022, 0x00050000);
 			msleep_range(20);
-			ret = mcdp6000_write_reg(mcdp6000, 0x4024, 0x00050000);
+			ret |= mcdp6000_write_reg(priv, 0x4024, 0x00050000);
 			msleep_range(20);
 		}
 	}
 
-	return 0;
+	if (ret) {
+		dev_err(&priv->client->dev, "MCDP6000 init failed\n");
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(mcdp6000_init);
 
@@ -365,31 +409,41 @@ MODULE_DEVICE_TABLE(i2c, mcdp6000_id);
 
 static int mcdp6000_probe(struct i2c_client *client)
 {
+	struct mcdp6000 *priv;
 	int ret;
 
-	/* initialize mcdp6000 */
-	mcdp6000 = devm_kzalloc(&client->dev, sizeof(*mcdp6000), GFP_KERNEL);
-	if (!mcdp6000)
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&mcdp6000->lock);
-	mcdp6000->client = client;
+	priv->client = client;
+	mutex_init(&priv->lock);
 
-	/* initialize regmap */
-	mcdp6000->regmap = devm_regmap_init_i2c(client,
-						&mcdp6000_regmap_config);
-	if (IS_ERR(mcdp6000->regmap)) {
+	priv->regmap = devm_regmap_init_i2c(client, &mcdp6000_regmap_config);
+	if (IS_ERR(priv->regmap)) {
 		dev_err(&client->dev,
-			"regmap init failed: %ld\n", PTR_ERR(mcdp6000->regmap));
+			"regmap init failed: %ld\n", PTR_ERR(priv->regmap));
 		ret = -ENODEV;
 		goto err_regmap;
 	}
-	dev_info(&client->dev, "mcdp6000 : probe success !\n");
 
+	/* Store per-instance priv */
+	i2c_set_clientdata(client, priv);
+
+	/* Read revision once and store it in instance pointer. This will be used by all runtime callbacks */
+	if (mcdp6000_get_revision(priv, &priv->rev, &priv->bs) == XST_SUCCESS)
+		dev_info(&client->dev,
+			 "mcdp6000: revision 0x%x bs 0x%x\n",
+			 priv->rev, priv->bs);
+	else
+		dev_warn(&client->dev, "mcdp6000_get_revision failed\n");
+
+	dev_info(&client->dev, "mcdp6000 probed on adapter '%s'\n",
+		 client->adapter->name);
 	return 0;
 
 err_regmap:
-	mutex_destroy(&mcdp6000->lock);
+	mutex_destroy(&priv->lock);
 	return ret;
 }
 
