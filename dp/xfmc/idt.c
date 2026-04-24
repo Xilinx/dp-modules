@@ -17,6 +17,7 @@
 #include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include "fmc.h"
 
 #define IDT_8T49N24X_REVID 0x0    /**< Device Revision */
 #define IDT_8T49N24X_DEVID 0x0607 /**< Device ID Code */
@@ -125,7 +126,6 @@ struct idts {
 	u32 mode_index;
 };
 
-struct idts *idt;
 
 /*
  * Function declaration
@@ -141,7 +141,7 @@ static inline int idt_read_reg(struct idts *priv, u8 addr, u8 *val)
 
 	err = regmap_read(priv->regmap, addr, (unsigned int *)val);
 	if (err)
-		dev_dbg(&idt->client->dev,
+		dev_err(&priv->client->dev,
 			"i2c read failed, addr = %x\n", addr);
 	return err;
 }
@@ -150,30 +150,41 @@ static inline int idt_write_reg(struct idts *priv, u16 addr, u8 val)
 {
 	int err = 0;
 
-	err = regmap_write(priv->regmap, addr, val);
-	if (err)
-		dev_dbg(&idt->client->dev,
-			"i2c write failed, addr = %x\n", addr);
+	int retry = 0;
+	do {
+		err = regmap_write(priv->regmap, addr, val);
+		if (err) {
+			retry++;
+			dev_err(&priv->client->dev,
+					"IDT I2C write failed, addr = %x val = %x Retry: %d\n", addr,val,retry);
+			msleep_range(30);
+		}
+	}while (err && retry < I2C_RETRY_COUNT);
 
 	return err;
 }
 
-static int idt_enable(u8 enable)
+static int idt_enable(struct idts *priv, u8 enable)
 {
 	int ret = 0;
-
 	if (enable) {
-		ret = idt_write_reg(idt, 0x0070, 5);
+		ret = idt_write_reg(priv, 0x0070, 0);
 		msleep_range(30);
-
+		if (ret)
+			dev_err(&priv->client->dev,
+				"IDT_8T49N24x_enable 1  I2C failed\n");
 	} else {
-		ret = idt_write_reg(idt, 0x0070, 0);
+		ret = idt_write_reg(priv, 0x0070, 5);
+		if (ret)
+			dev_err(&priv->client->dev,
+				"IDT_8T49N24x_enable 0  I2C failed\n");
 		msleep_range(30);
 	}
 	return ret;
 }
 
-static int idt_8T49n24x_configure_ja(u32 i2c_base_addr, u8 i2c_slave_addr)
+static int idt_8T49n24x_configure_ja(struct idts *priv,
+				      u32 i2c_base_addr, u8 i2c_slave_addr)
 {
 	int ret = 0;
 	u32 index;
@@ -181,8 +192,12 @@ static int idt_8T49n24x_configure_ja(u32 i2c_base_addr, u8 i2c_slave_addr)
 	for (index = 8; index < sizeof(idt_8T49n24x_config_ja); index++) {
 		msleep_range(10);
 		if (index != 0x070)
-			ret = idt_write_reg(idt, index,
+			ret = idt_write_reg(priv, index,
 					    idt_8T49n24x_config_ja[index]);
+	}
+	if (ret) {
+		dev_err(&priv->client->dev,
+                        "idt_8T49n24x_configure_ja I2C progmming failed\n");
 	}
 	return ret;
 }
@@ -202,278 +217,174 @@ static int idt_8T49n24x_configure_ja(u32 i2c_base_addr, u8 i2c_slave_addr)
  * *
  * **************************************************************************/
 
-int IDT_8T49N24x_Configure(void)
+int IDT_8T49N24x_Configure(struct i2c_client *client)
 {
+	struct idts *priv = i2c_get_clientdata(client);
 	int ret = 0;
 	u32 index;
 
+	if (!priv)
+		return -ENODEV;
 	for (index = 8; index < sizeof(idt_8T49n24x_config_syn); index++) {
 		if (index != 0x070) {
-			ret = idt_write_reg(idt, index,
-					    idt_8T49n24x_config_syn[index]);
+			ret |= idt_write_reg(priv, index,
+					     idt_8T49n24x_config_syn[index]);
 			msleep_range(10);
 		}
 	}
+	if (ret)
+		dev_err(&priv->client->dev, "IDT_8T49N24x_Configure failed\n");
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(IDT_8T49N24x_Configure);
 
-int IDT_8T49N24x_SetClock(void)
+int IDT_8T49N24x_SetClock(struct i2c_client *client)
 {
-	int ret;
+	struct idts *priv = i2c_get_clientdata(client);
+	int ret = 0;
 
-	ret = idt_write_reg(idt, 0x0070, 0x5);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n",  __LINE__,  __func__);
+	if (!priv)
+		return -ENODEV;
+	ret = idt_write_reg(priv, 0x0070, 0x5);
 	msleep_range(20);
 
-	ret = idt_write_reg(idt, 0x000a, 0x30);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000a, 0x30);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000a, 0x30);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000a, 0x30);
 	msleep_range(10);
 
-	ret  = idt_write_reg(idt, 0x000a, 0x31);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret  |= idt_write_reg(priv, 0x000a, 0x31);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0069, 0x0a);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0069, 0x0a);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000b, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000b, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000c, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000c, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000d, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000d, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000e, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000e, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x000f, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x000f, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0010, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0010, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0014, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0014, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0015, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0015, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0016, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0016, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0011, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0011, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0012, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0012, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0013, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0013, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0025, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0025, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0026, 0x28);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0026, 0x28);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0028, 0x10);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0028, 0x10);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0029, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0029, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x002a, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x002a, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0045, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
-
+	ret |= idt_write_reg(priv, 0x0045, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0046, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0046, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0047, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0047, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0048, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0048, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0049, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0049, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x004a, 0x6);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x004a, 0x6);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x005b, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
-
+	ret |= idt_write_reg(priv, 0x005b, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x005c, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x005c, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x005d, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x005d, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x005e, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x005e, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x005f, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x005f, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0060, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0060, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0061, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0061, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0062, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0062, 0x0);
 	msleep_range(10);
 
-	ret = idt_write_reg(idt, 0x0070, 0x0);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"%d %s i2c write failed\n", __LINE__, __func__);
+	ret |= idt_write_reg(priv, 0x0070, 0x0);
 	msleep_range(10);
+
+	if (ret)
+		dev_err(&priv->client->dev, "IDT_8T49N24x_SetClock failed\n");
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(IDT_8T49N24x_SetClock);
 
-int IDT_8T49N24x_Init(void)
+int IDT_8T49N24x_Init(struct i2c_client *client)
 {
+	struct idts *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
+	if (!priv)
+		return -ENODEV;
 	msleep_range(30);
-	ret = idt_enable(FALSE);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"IDT_8T49N24x_enable 0  I2C progmming failed\n");
+	ret = idt_enable(priv, FALSE);
 	msleep_range(30);
 	/* Configure device. */
-	ret = idt_8T49n24x_configure_ja(XPAR_IIC_0_BASEADDR, I2C_IDT8N49_ADDR);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"idt_8T49n24x_configure_ja I2C progmming failed\n");
-
+	ret |= idt_8T49n24x_configure_ja(priv, XPAR_IIC_0_BASEADDR,
+					 I2C_IDT8N49_ADDR);
 	msleep_range(30);
 	/* enable DPLL and APLL calibration. */
-	ret = idt_enable(TRUE);
-	if (ret)
-		dev_dbg(&idt->client->dev,
-			"IDT_8T49N24x_enable 1 I2C progmming failed\n");
+	ret |= idt_enable(priv, TRUE);
 	msleep_range(30);
-	return 0;
+
+	if (ret)
+		dev_err(&priv->client->dev, "IDT_8T49N24x_Init failed\n");
+	return ret;
 }
 EXPORT_SYMBOL_GPL(IDT_8T49N24x_Init);
 
@@ -493,27 +404,30 @@ static int idt_probe(struct i2c_client *client)
 {
 	int ret;
 
-	/* initialize idt */
-	idt = devm_kzalloc(&client->dev, sizeof(*idt), GFP_KERNEL);
-	if (!idt)
+	struct idts *priv;
+
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&idt->lock);
+	priv->client = client;
+	mutex_init(&priv->lock);
 
-	/* initialize regmap */
-	idt->regmap = devm_regmap_init_i2c(client, &idt_regmap_config);
-	if (IS_ERR(idt->regmap)) {
+	priv->regmap = devm_regmap_init_i2c(client, &idt_regmap_config);
+	if (IS_ERR(priv->regmap)) {
 		dev_err(&client->dev,
-			"regmap init failed: %ld\n", PTR_ERR(idt->regmap));
+			"regmap init failed: %ld\n", PTR_ERR(priv->regmap));
 		ret = -ENODEV;
 		goto err_regmap;
 	}
 
-	dev_info(&client->dev, "idt : probe success !\n");
+	i2c_set_clientdata(client, priv);
+	dev_info(&client->dev, "idt probed on adapter '%s'\n",
+		 client->adapter->name);
 	return 0;
 
 err_regmap:
-	mutex_destroy(&idt->lock);
+	mutex_destroy(&priv->lock);
 	return ret;
 }
 
@@ -537,11 +451,11 @@ void idt_exit(void)
 }
 EXPORT_SYMBOL_GPL(idt_exit);
 
-int idt_init(void)
+int idt_entry(void)
 {
 	return i2c_add_driver(&idt_i2c_driver);
 }
-EXPORT_SYMBOL_GPL(idt_init);
+EXPORT_SYMBOL_GPL(idt_entry);
 
 MODULE_AUTHOR("Rajesh Gugulothu <gugulot@xilinx.com>");
 MODULE_DESCRIPTION("IDT Expander driver");

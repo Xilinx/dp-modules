@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include "fmc.h"
 /**************************** Type Definitions *******************************/
 static const struct regmap_config fmc64_regmap_config = {
 	.reg_bits = 16,
@@ -36,7 +37,6 @@ struct fmcs64 {
 	u32 mode_index;
 };
 
-struct fmcs64 *fmc64;
 
 /*
  * Function declaration
@@ -52,7 +52,7 @@ static inline int fmc64_read_reg(struct fmcs64 *priv, u16 addr, u8 *val)
 
 	err = regmap_read(priv->regmap, addr, (unsigned int *)val);
 	if (err)
-		dev_dbg(&priv->client->dev, "fmc64 :regmap_read failed\n");
+		dev_err(&priv->client->dev, "fmc64 :regmap_read failed\n");
 	return err;
 }
 
@@ -60,19 +60,31 @@ static inline int fmc64_write_reg(struct fmcs64 *priv, u16 addr, u8 val)
 {
 	int err;
 
-	err = regmap_write(priv->regmap, addr, val);
-	if (err)
-		dev_dbg(&priv->client->dev, "fmc64 :regmap_write failed\n");
+	int retry = 0;
+	do {
+		err = regmap_write(priv->regmap, addr, val);
+		if (err) {
+			retry++;
+			dev_err(&priv->client->dev, "FMC64 I2C write failed, addr = %x val = %x Retry: %d\n", addr,val,retry);
+			msleep_range(30);
+		}
+	}while (err && retry < I2C_RETRY_COUNT);
+
 	return err;
 }
 
-int fmc64_init(void)
+int fmc64_init(struct i2c_client *client)
 {
+	struct fmcs64 *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
-	ret = fmc64_write_reg(fmc64, 0x0, 0x52);
-	if (ret)
+	if (!priv)
+		return -ENODEV;
+	ret = fmc64_write_reg(priv, 0x0, 0x52);
+	if (ret) {
+		dev_err(&priv->client->dev, "FMC64 Init failed\n");
 		return 1;
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(fmc64_init);
@@ -93,28 +105,30 @@ static int fmc64_probe(struct i2c_client *client)
 {
 	int ret;
 
-	/* initialize fmc64 */
-	fmc64 = devm_kzalloc(&client->dev, sizeof(*fmc64), GFP_KERNEL);
-	if (!fmc64)
+	struct fmcs64 *priv;
+
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&fmc64->lock);
+	priv->client = client;
+	mutex_init(&priv->lock);
 
-	/* initialize regmap */
-	fmc64->regmap = devm_regmap_init_i2c(client, &fmc64_regmap_config);
-	if (IS_ERR(fmc64->regmap)) {
+	priv->regmap = devm_regmap_init_i2c(client, &fmc64_regmap_config);
+	if (IS_ERR(priv->regmap)) {
 		dev_err(&client->dev, "fmc64: regmap init failed: %ld\n",
-			PTR_ERR(fmc64->regmap));
+			PTR_ERR(priv->regmap));
 		ret = -ENODEV;
 		goto err_regmap;
 	}
 
-	dev_info(&client->dev, "fmc64 : probe success !\n");
-
+	i2c_set_clientdata(client, priv);
+	dev_info(&client->dev, "fmc64 probed on adapter '%s'\n",
+		 client->adapter->name);
 	return 0;
 
 err_regmap:
-	mutex_destroy(&fmc64->lock);
+	mutex_destroy(&priv->lock);
 	return ret;
 }
 

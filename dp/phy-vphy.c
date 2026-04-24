@@ -42,6 +42,7 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/idr.h>
 
 #include "linux/phy/phy-vphy.h"
 
@@ -122,9 +123,11 @@
 #define hdmi_mutex_lock(x) mutex_lock(x)
 #define hdmi_mutex_unlock(x) mutex_unlock(x)
 
-static void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
+static const struct of_device_id xvphy_of_match[];
+
+static void xvphy_pe_vs_adjust_handler(struct xvphy_dev *vphydev,
 					struct phy_configure_opts_dp *dp);
-void xvphy_prbs_mode(u8 enable);
+void xvphy_prbs_mode(void *vphydev, u8 enable);
 typedef enum {
         ONBOARD_REF_CLK = 1,
         DP159_FORWARDED_CLK = 3,
@@ -145,11 +148,8 @@ typedef struct {
 } XVphy_User_Config;
 
 struct xvphy_cfg {
-	void (*vidphy_prbs_mode)(u8 enable);
-};
-
-static struct xvphy_cfg xvphy_cfg_data = {
-	.vidphy_prbs_mode = xvphy_prbs_mode,
+	void (*vidphy_prbs_mode)(void *vphydev, u8 enable);
+	void *vphydev;
 };
 
 /**
@@ -178,9 +178,7 @@ struct xvphy_lane {
 	struct xvphy_dev *vphydev;
 };
 
-struct xvphy_dev *vphydev_g;
-struct xvphy_dev *vphydev;
-static XVphy_User_Config PHY_User_Config_Table[] =
+static const XVphy_User_Config PHY_User_Config_Table[] =
 {
 /* Index,         TxPLL,               RxPLL,
  * TxChId,         RxChId,
@@ -233,13 +231,6 @@ static XVphy_User_Config PHY_User_Config_Table[] =
 		  ONBOARD_REF_CLK,        ONBOARD_REF_CLK,     270000000,270000000},
 
 };
-
-struct xvphy_dev *register_dp_cb(void)
-{
-	return  vphydev_g;
-}
-EXPORT_SYMBOL(register_dp_cb);
-
 /* given the (Linux) phy handle, return the xvphy */
 XVphy *xvphy_get_xvphy(struct phy *phy)
 {
@@ -341,7 +332,7 @@ void PLLRefClkSel (XVphy *InstancePtr, u32 link_rate) {
 * @note        None.
 *
 ******************************************************************************/
-void DpRxSs_LinkBandwidthHandler(u32 linkrate)
+void DpRxSs_LinkBandwidthHandler(struct xvphy_dev *vphydev, u32 linkrate)
 {
 //	dev_dbg(vphydev->dev,"  DpRxSs_LinkBandwidthHandler \n");
 	/*Program Video PHY to requested line rate*/
@@ -368,7 +359,7 @@ void DpRxSs_LinkBandwidthHandler(u32 linkrate)
 * @note        None.
 *
 ******************************************************************************/
-void DpRxSs_PllResetHandler(void)
+void DpRxSs_PllResetHandler(struct xvphy_dev *vphydev)
 {
 	/* Issue resets to Video PHY - This API
 	 * called after line rate is programmed */
@@ -403,7 +394,7 @@ EXPORT_SYMBOL(DpRxSs_PllResetHandler);
  * *
  * ******************************************************************************/
 
-u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_Table){
+u32 PHY_Configuration_Tx(XVphy *InstancePtr, struct xvphy_dev *vphydev,XVphy_User_Config PHY_User_Config_Table){
 
         XVphy_PllRefClkSelType QpllRefClkSel;
         XVphy_PllRefClkSelType CpllRefClkSel;
@@ -459,7 +450,6 @@ u32 PHY_Configuration_Tx(XVphy *InstancePtr, XVphy_User_Config PHY_User_Config_T
 	hdmi_mutex_unlock(&vphydev->xvphy_mutex);
 	return (Status);
 }
-struct xvphy_dev *vphydev;
 
 /*****************************************************************************/
 /**
@@ -473,7 +463,7 @@ struct xvphy_dev *vphydev;
  * * @note              None.
  * *
  * ******************************************************************************/
-u32 set_vphy(int LineRate_init_tx){
+u32 set_vphy(struct xvphy_dev *vphydev, int LineRate_init_tx){
 
 
         u32 Status=0;
@@ -481,22 +471,22 @@ u32 set_vphy(int LineRate_init_tx){
 //	dev_dbg(vphydev->dev,"  set_vphy \n");
         switch(LineRate_init_tx){
                 case 1620:
-                        Status = PHY_Configuration_Tx(&vphydev->xvphy,
+                        Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?0:3]);
                         break;
 
                 case 2700:
-                        Status = PHY_Configuration_Tx(&vphydev->xvphy,
+                        Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?1:4]);
                         break;
 
                 case 5400:
-                        Status = PHY_Configuration_Tx(&vphydev->xvphy,
+                        Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?2:5]);
                         break;
 
                 case 8100:
-                        Status = PHY_Configuration_Tx(&vphydev->xvphy,
+                        Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?9:10]);
                         break;
         }
@@ -561,8 +551,9 @@ void xvphy_SetTxVoltageSwing (XVphy *InstancePtr, u32 chid, u8 vs)
 	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
 }
 
-void xvphy_prbs_mode(u8 enable)
+void xvphy_prbs_mode(void *vphy,u8 enable)
 {
+	struct xvphy_dev *vphydev = (struct xvphy_dev *)vphy;
 	XVphy *InstancePtr = &vphydev->xvphy;
 	u32 DrpVal;
 
@@ -595,7 +586,6 @@ void xvphy_prbs_mode(u8 enable)
 			       XVPHY_RX_CONTROL_REG, DrpVal);
 	}
 }
-
 /**
  * xvphy__pe_vs_adjust_handler - Calculate and configure pe and vs values
  * @dp: DisplayPort IP core structure
@@ -603,7 +593,7 @@ void xvphy_prbs_mode(u8 enable)
  * This function adjusts the pre emphasis and voltage swing values of phy.
  */
 
-void xvphy_pe_vs_adjust_handler(XVphy *InstancePtr,
+void xvphy_pe_vs_adjust_handler(struct xvphy_dev *vphydev,
 					struct phy_configure_opts_dp *dp)
 {
 	unsigned char preemp = 0, diff_swing = 0;
@@ -770,7 +760,7 @@ static int xvphy_phy_reset(struct phy *phy)
 
 	BUG_ON(!phy);
 	if (!vphy_lane->direction)
-		DpRxSs_PllResetHandler();
+		DpRxSs_PllResetHandler(vphy_lane->data);
 
 	return 0;
 }
@@ -781,16 +771,16 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 
 	BUG_ON(!phy);
 	if(opts->dp.set_rate && !vphy_lane->direction) {
-		DpRxSs_LinkBandwidthHandler(opts->dp.link_rate);
+		DpRxSs_LinkBandwidthHandler(vphydev,opts->dp.link_rate);
 		opts->dp.set_rate = 0;
 	}
 	if(opts->dp.set_rate && vphy_lane->direction) {
 		dev_dbg(vphydev->dev,"%s:set_rate\n",__func__);
-		set_vphy(opts->dp.link_rate);
+		set_vphy(vphydev,opts->dp.link_rate);
 		opts->dp.set_rate = 0;
 	}
 	if(opts->dp.set_voltages && vphy_lane->direction){
-		xvphy_pe_vs_adjust_handler(&vphydev->xvphy, &opts->dp);
+		xvphy_pe_vs_adjust_handler(vphydev, &opts->dp);
 		opts->dp.set_voltages = 0;
 	}
 
@@ -807,11 +797,26 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 static struct phy *xvphy_xlate(struct device *dev,
 				   const struct of_phandle_args *args)
 {
+	struct platform_device *pdev = to_platform_device(dev);
 	struct xvphy_lane *vphy_lane = NULL;
 	struct device_node *phynode = args->np;
+	struct xvphy_cfg *xvphy_prvdata;
+	struct xvphy_dev *vphydev;
 	int index;
 	u8 controller;
 	u8 instance_num;
+
+	xvphy_prvdata = platform_get_drvdata(pdev);
+	if (!xvphy_prvdata) {
+		dev_err(dev, "No driver data available\n");
+		return ERR_PTR(-ENODEV);
+	}
+
+	vphydev = (struct xvphy_dev *)xvphy_prvdata->vphydev;
+	if (!vphydev) {
+		dev_err(dev, "No vphydev available\n");
+		return ERR_PTR(-ENODEV);
+	}
 
 	if (args->args_count != 4) {
 		dev_err(dev, "Invalid number of cells in 'phy' property\n");
@@ -822,14 +827,25 @@ static struct phy *xvphy_xlate(struct device *dev,
 		return ERR_PTR(-ENODEV);
 	}
 	for (index = 0; index < of_get_child_count(dev->of_node); index++) {
+		if (!vphydev->lanes[index]) {
+			dev_info(dev, "[inst %u] lanes[%d] not initialized yet\n",
+				vphydev->inst_id, index);
+			continue;
+		}
+		if (!vphydev->lanes[index]->phy || !vphydev->lanes[index]->phy->dev.of_node) {
+			dev_info(dev, "[inst %u] lanes[%d] phy->dev.of_node is NULL\n",
+				vphydev->inst_id, index);
+			continue;
+		}
 		if (phynode == vphydev->lanes[index]->phy->dev.of_node) {
 			vphy_lane = vphydev->lanes[index];
 			break;
 		}
 	}
 	if (!vphy_lane) {
-		dev_err(dev, "failed to find appropriate phy\n");
-		return ERR_PTR(-EINVAL);
+		dev_info(dev, "[inst %u] PHY lane not found yet, deferring probe\n",
+			vphydev->inst_id);
+		return ERR_PTR(-EPROBE_DEFER);
 	}
 
 	/* get type of controller from lanes */
@@ -849,8 +865,12 @@ static struct phy *xvphy_xlate(struct device *dev,
 
 }
 
-/* Local Global table for phy instance(s) configuration settings */
-XVphy_Config XVphy_ConfigTable[XPAR_XVPHY_NUM_INSTANCES];
+XVphy_Config *XVphy_ConfigTable;
+u32 XVphy_ConfigTableSize;
+static atomic_t xvphy_instance_count = ATOMIC_INIT(0);
+
+static DEFINE_IDA(xvphy_instance_ida);
+static DEFINE_MUTEX(xvphy_cfg_table_lock);
 
 static struct phy_ops xvphy_phyops = {
 	.configure	= xvphy_phy_configure,
@@ -858,10 +878,48 @@ static struct phy_ops xvphy_phyops = {
 	.init		= xvphy_phy_init,
 	.owner		= THIS_MODULE,
 };
-
-static int instance = 0;
 /* TX uses [1, 127], RX uses [128, 254] and VPHY uses [256, ...]. Note that 255 is used for not-present. */
 #define VPHY_DEVICE_ID_BASE 256
+
+static void xvphy_release_instance_id(void *data)
+{
+	ida_free(&xvphy_instance_ida, (int)(uintptr_t)data);
+	atomic_dec(&xvphy_instance_count);
+}
+
+static int xvphy_init_config_table(struct device *dev)
+{
+	struct device_node *node = NULL;
+	u32 count = 0;
+
+	mutex_lock(&xvphy_cfg_table_lock);
+	if (XVphy_ConfigTable) {
+		mutex_unlock(&xvphy_cfg_table_lock);
+		return 0;
+	}
+
+	for_each_matching_node(node, xvphy_of_match) {
+		if (of_device_is_available(node))
+		        count++;
+	}
+
+	if (!count) {
+		mutex_unlock(&xvphy_cfg_table_lock);
+		dev_err(dev, "No enabled VPHY nodes found in device tree\n");
+		return -ENODEV;
+	}
+
+	XVphy_ConfigTable = kcalloc(count, sizeof(*XVphy_ConfigTable), GFP_KERNEL);
+	if (!XVphy_ConfigTable) {
+		mutex_unlock(&xvphy_cfg_table_lock);
+		return -ENOMEM;
+	}
+
+	XVphy_ConfigTableSize = count;
+	mutex_unlock(&xvphy_cfg_table_lock);
+
+	return 0;
+}
 
 static int vphy_parse_of(struct xvphy_dev *vphydev, XVphy_Config *c)
 {
@@ -1060,7 +1118,6 @@ static const struct regmap_config fmc_regmap_config = {
         .cache_type = REGCACHE_RBTREE,
 };
 
-//struct xvphy_dev *vphydev_g;
 /**
  * xvphy_probe - The device probe function for driver initialization.
  * @pdev: pointer to the platform device structure.
@@ -1073,7 +1130,6 @@ static int xvphy_probe(struct platform_device *pdev)
 	struct phy_provider *provider;
 	struct device_node *fnode;
 	struct platform_device *iface_pdev;
-	struct xvphy_cfg *xvphy_prvdata;
 	struct phy *phy;
 	unsigned long axi_lite_rate;
 	unsigned long drp_clk_rate;
@@ -1082,23 +1138,48 @@ static int xvphy_probe(struct platform_device *pdev)
 	int port = 0, index = 0;
 	void *ptr;
 	int ret;
+	int inst_id;
+	struct xvphy_dev *vphydev;
 
-	dev_info(&pdev->dev, "xlnx-dp-vphy: probed\n");
+	dev_info(&pdev->dev, "xlnx-dp-vphy: probe started\n");
 	vphydev = devm_kzalloc(&pdev->dev, sizeof(*vphydev), GFP_KERNEL);
 	if (!vphydev)
 		return -ENOMEM;
+
+	ret = xvphy_init_config_table(&pdev->dev);
+	if (ret)
+		return ret;
 
 	/* mutex that protects against concurrent access */
 	mutex_init(&vphydev->xvphy_mutex);
 
 	vphydev->dev = &pdev->dev;
-	xvphy_prvdata = &xvphy_cfg_data;
-	/* set a pointer to our driver data */
-	platform_set_drvdata(pdev, xvphy_prvdata);
+	inst_id = ida_alloc_range(&xvphy_instance_ida, 0,
+				  XVphy_ConfigTableSize - 1,
+				  GFP_KERNEL);
+	if (inst_id < 0)
+		return inst_id;
+
+	ret = devm_add_action_or_reset(&pdev->dev,
+			xvphy_release_instance_id, (void *)(uintptr_t)inst_id);
+	if (ret)
+		return ret;
+
+	vphydev->inst_id = inst_id;
+	vphydev->cfg = &XVphy_ConfigTable[vphydev->inst_id];
+
+	vphydev->xvphy_prvdata = devm_kzalloc(&pdev->dev, sizeof(struct xvphy_cfg),GFP_KERNEL);
+	if (!vphydev->xvphy_prvdata)
+		return -ENOMEM;
+	vphydev->xvphy_prvdata->vidphy_prbs_mode = xvphy_prbs_mode;
+	vphydev->xvphy_prvdata->vphydev = (void *) vphydev;
+
+	atomic_inc(&xvphy_instance_count);
+	platform_set_drvdata(pdev, vphydev->xvphy_prvdata);
 
 	BUG_ON(!np);
 
-	XVphy_ConfigTable[instance].DeviceId = VPHY_DEVICE_ID_BASE + instance;
+	vphydev->cfg->DeviceId = VPHY_DEVICE_ID_BASE + vphydev->inst_id;
 
 	fnode = of_parse_phandle(np, "xlnx,xilinx-vfmc", 0);
 	if (!fnode) {
@@ -1121,7 +1202,7 @@ static int xvphy_probe(struct platform_device *pdev)
 	}
 
 	dev_dbg(vphydev->dev,"DT parse start\n");
-	ret = vphy_parse_of(vphydev, &XVphy_ConfigTable[instance]);
+	ret = vphy_parse_of(vphydev, vphydev->cfg);
 	if (ret) return ret;
 	dev_dbg(vphydev->dev,"DT parse done\n");
 
@@ -1132,7 +1213,7 @@ static int xvphy_probe(struct platform_device *pdev)
 		return PTR_ERR(vphydev->iomem);
 
 	/* set address in configuration data */
-	XVphy_ConfigTable[instance].BaseAddr = (uintptr_t)vphydev->iomem;
+	vphydev->cfg->BaseAddr = (uintptr_t)vphydev->iomem;
 
 	vphydev->irq = platform_get_irq(pdev, 0);
 	if (vphydev->irq <= 0) {
@@ -1154,7 +1235,7 @@ static int xvphy_probe(struct platform_device *pdev)
 	}
 	axi_lite_rate = clk_get_rate(vphydev->axi_lite_clk);
 	/* set axi-lite clk in configuration data */
-	XVphy_ConfigTable[instance].AxiLiteClkFreq = axi_lite_rate;
+	vphydev->cfg->AxiLiteClkFreq = axi_lite_rate;
 	
 	vphydev->drp_clk = devm_clk_get(&pdev->dev, "drpclk");
 	if (IS_ERR(vphydev->drp_clk)) {
@@ -1170,10 +1251,10 @@ static int xvphy_probe(struct platform_device *pdev)
 
 	drp_clk_rate = clk_get_rate(vphydev->drp_clk);
 	
-	XVphy_ConfigTable[instance].DrpClkFreq = drp_clk_rate;
+	vphydev->cfg->DrpClkFreq = drp_clk_rate;
 	
 	PLLRefClkSel (&vphydev->xvphy, PHY_User_Config_Table[9].LineRate);
-	XVphy_DpInitialize(&vphydev->xvphy,&XVphy_ConfigTable[instance], 0,
+	XVphy_DpInitialize(&vphydev->xvphy, vphydev->cfg, 0,
 			   PHY_User_Config_Table[9].CPLLRefClkSrc,
 			   PHY_User_Config_Table[9].QPLLRefClkSrc,
 			   PHY_User_Config_Table[9].TxPLL,
@@ -1206,8 +1287,12 @@ static int xvphy_probe(struct platform_device *pdev)
 			 XVPHY_DIR_RX,(FALSE));
 	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(FALSE));
 
-	Status = PHY_Configuration_Tx(&vphydev->xvphy,
+	Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
 				PHY_User_Config_Table[(is_TX_CPLL) ? 2 : 5]);
+	if(Status) {
+		dev_err(&pdev->dev, "dp-vphy probe failed\n");
+                return Status;
+	}
 	for_each_child_of_node(np, child) {
 		struct xvphy_lane *vphy_lane;
 
@@ -1257,6 +1342,7 @@ static int xvphy_probe(struct platform_device *pdev)
 					"xilinx-vphy", vphydev/*dev_id*/);
 	if (ret) {
 		dev_err(&pdev->dev, "unable to request IRQ %d\n", vphydev->irq);
+		dev_err(&pdev->dev, "dp-vphy probe failed\n");
 		return ret;
 	}
 
@@ -1265,13 +1351,6 @@ static int xvphy_probe(struct platform_device *pdev)
 	}
 	
 	dev_info(&pdev->dev, "dp-vphy probe successful\n");
-	vphydev_g = vphydev;
-
-	/* probe has succeeded for this instance, increment instance index */
-	instance++;
-	/* Complete PHY dump */
-
-
 	return 0;
 }
 
@@ -1289,7 +1368,25 @@ static struct platform_driver xvphy_driver = {
 		.of_match_table	= xvphy_of_match,
 	},
 };
-module_platform_driver(xvphy_driver);
+
+static int __init xvphy_init(void)
+{
+	return platform_driver_register(&xvphy_driver);
+}
+module_init(xvphy_init);
+
+static void __exit xvphy_exit(void)
+{
+	platform_driver_unregister(&xvphy_driver);
+
+	/* Warn if we messed up the refcounting, but proceed with cleanup */
+	WARN_ON(atomic_read(&xvphy_instance_count) > 0);
+
+	kfree(XVphy_ConfigTable);
+	XVphy_ConfigTable = NULL;
+	ida_destroy(&xvphy_instance_ida);
+}
+module_exit(xvphy_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Leon Woestenberg <leon@sidebranch.com>");

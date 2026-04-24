@@ -14,7 +14,7 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-
+#include "fmc.h"
 /**************************** Type Definitions *******************************/
 
 struct reg_8 {
@@ -44,7 +44,6 @@ struct dp141 {
 	u32 mode_index;
 };
 
-struct dp141 *dp141;
 
 /*
  * Function declaration
@@ -60,7 +59,7 @@ static inline int dp141_read_reg(struct dp141 *priv, u8 addr, u8 *val)
 
 	err = regmap_read(priv->regmap, addr, (unsigned int *)val);
 	if (err)
-		dev_dbg(&priv->client->dev, "dp141 :regmap_read failed\n");
+		dev_err(&priv->client->dev, "dp141 :regmap_read failed\n");
 	return err;
 }
 
@@ -68,26 +67,37 @@ static inline int dp141_write_reg(struct dp141 *priv, u8 addr, u8 val)
 {
 	int err;
 
-	err = regmap_write(priv->regmap, addr, val);
-	if (err)
-		dev_dbg(&priv->client->dev,
-			"dp141 :regmap_write failed @0x%x\n",addr);
+	int retry = 0;
+        do {
+                err = regmap_write(priv->regmap, addr, val);
+                if (err) {
+			retry++;
+                        dev_err(&priv->client->dev, "DP141 I2C write failed, addr = %x val = %x Retry: %d\n", addr,val,retry);
+                        msleep_range(30);
+                }
+        }while (err && retry < I2C_RETRY_COUNT);
 
 	return err;
 }
 
-int dp141_init(void)
+int dp141_init(struct i2c_client *client)
 {
+	struct dp141 *priv = i2c_get_clientdata(client);
 	int ret = 0;
 
+	if (!priv)
+		return -ENODEV;
 	msleep_range(20);
-	ret = dp141_write_reg(dp141, 0x2, 0x3c);
+	ret |= dp141_write_reg(priv, 0x2, 0x3c);
 	msleep_range(10);
-	ret = dp141_write_reg(dp141, 0x5, 0x3c);
+	ret |= dp141_write_reg(priv, 0x5, 0x3c);
 	msleep_range(10);
-	ret = dp141_write_reg(dp141, 0x8, 0x3c);
+	ret |= dp141_write_reg(priv, 0x8, 0x3c);
 	msleep_range(10);
-	ret = dp141_write_reg(dp141, 0xb, 0x3c);
+	ret |= dp141_write_reg(priv, 0xb, 0x3c);
+
+	if (ret)
+		dev_err(&priv->client->dev, "DP141 init failed\n");
 
 	return ret;
 }
@@ -109,28 +119,30 @@ static int dp141_probe(struct i2c_client *client)
 {
 	int ret;
 
-	/* initialize dp141 */
-	dp141 = devm_kzalloc(&client->dev, sizeof(*dp141), GFP_KERNEL);
-	if (!dp141)
+	struct dp141 *priv;
+
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&dp141->lock);
+	priv->client = client;
+	mutex_init(&priv->lock);
 
-	/* initialize regmap */
-	dp141->regmap = devm_regmap_init_i2c(client, &dp141_regmap_config);
-	if (IS_ERR(dp141->regmap)) {
+	priv->regmap = devm_regmap_init_i2c(client, &dp141_regmap_config);
+	if (IS_ERR(priv->regmap)) {
 		dev_err(&client->dev,
-			"regmap init failed: %ld\n", PTR_ERR(dp141->regmap));
+			"regmap init failed: %ld\n", PTR_ERR(priv->regmap));
 		ret = -ENODEV;
 		goto err_regmap;
 	}
 
-	dev_info(&client->dev, "dp141 : probe success !\n");
-
+	i2c_set_clientdata(client, priv);
+	dev_info(&client->dev, "dp141 probed on adapter '%s'\n",
+		 client->adapter->name);
 	return 0;
 
 err_regmap:
-	mutex_destroy(&dp141->lock);
+	mutex_destroy(&priv->lock);
 	return ret;
 }
 
