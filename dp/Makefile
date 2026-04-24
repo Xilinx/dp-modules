@@ -36,7 +36,6 @@ obj-m += phy-xilinx-vphy.o xilinx-vfmc.o
 # top-level Linux driver source
 phy-xilinx-vphy-objs := phy-vphy.o
 xilinx-vfmc-objs += xfmc/xilinx-vfmc.o
-xilinx-vfmc-objs += xfmc/fmc.o
 xilinx-vfmc-objs += xfmc/fmc64.o
 xilinx-vfmc-objs += xfmc/fmc65.o
 xilinx-vfmc-objs += xfmc/idt.o
