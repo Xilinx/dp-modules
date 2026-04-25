@@ -427,16 +427,16 @@ static int mcdp6000_probe(struct i2c_client *client)
 		goto err_regmap;
 	}
 
-	/* Store per-instance priv */
-	i2c_set_clientdata(client, priv);
-
 	/* Read revision once and store it in instance pointer. This will be used by all runtime callbacks */
-	if (mcdp6000_get_revision(priv, &priv->rev, &priv->bs) == XST_SUCCESS)
+	if (mcdp6000_get_revision(priv, &priv->rev, &priv->bs) == XST_SUCCESS) {
 		dev_info(&client->dev,
-			 "mcdp6000: revision 0x%x bs 0x%x\n",
-			 priv->rev, priv->bs);
-	else
-		dev_warn(&client->dev, "mcdp6000_get_revision failed\n");
+				"mcdp6000: revision 0x%x bs 0x%x\n",
+				priv->rev, priv->bs);
+		/* Store per-instance priv */
+		i2c_set_clientdata(client, priv);
+	} else {
+		dev_err(&client->dev, "mcdp6000_get_revision failed\n");
+	}
 
 	dev_info(&client->dev, "mcdp6000 probed on adapter '%s'\n",
 		 client->adapter->name);

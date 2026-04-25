@@ -67,6 +67,9 @@ int xfmc_init(struct x_vfmc_dev *xfmcdev)
 {
 	int status = 0;
 
+	if(!i2c_get_clientdata(xfmcdev->mcdp6000_client))
+		return XST_DEVICE_NOT_FOUND;
+
 	status |= fmc64_init(xfmcdev->fmc64_client);
 	status |= fmc65_init(xfmcdev->fmc65_client);
 	status |= IDT_8T49N24x_Init(xfmcdev->idt_client);
@@ -128,9 +131,13 @@ static int xvfmc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, cfg);
 
 	status = xfmc_init(xfmcdev);
-	if (status) {
-		dev_err(&pdev->dev, "FMC initialization failed with errror: %d\n",status);
-		dev_err(&pdev->dev, "xilinx-vfmc probe failed\n");
+	if (status == XST_DEVICE_NOT_FOUND) {
+		dev_err(&pdev->dev, "FMC not found\n");
+		dev_err(&pdev->dev, "xilinx-vfmc probe failed with error:%d\n",status);
+		return status;
+
+	}else if (status) {
+		dev_err(&pdev->dev, "xilinx-vfmc probe failed with error:%d\n",status);
 		return status;
 	}
 
