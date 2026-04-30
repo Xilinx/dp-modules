@@ -128,7 +128,6 @@ static int xvfmc_probe(struct platform_device *pdev)
 	cfg->retimer_access_laneset = xvfmc_retimer_access_laneset;
 	cfg->retimer_set_prbs_mode  = xvfmc_retimer_prbs_mode;
 
-	platform_set_drvdata(pdev, cfg);
 
 	status = xfmc_init(xfmcdev);
 	if (status == XST_DEVICE_NOT_FOUND) {
@@ -141,6 +140,7 @@ static int xvfmc_probe(struct platform_device *pdev)
 		return status;
 	}
 
+	platform_set_drvdata(pdev, cfg);
 	dev_info(&pdev->dev, "xilinx-vfmc probed successfully\n");
 	return 0;
 }

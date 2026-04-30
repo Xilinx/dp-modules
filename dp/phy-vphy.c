@@ -1181,7 +1181,7 @@ static int xvphy_probe(struct platform_device *pdev)
 
 	vphydev->cfg->DeviceId = VPHY_DEVICE_ID_BASE + vphydev->inst_id;
 
-	fnode = of_parse_phandle(np, "xlnx,xilinx-vfmc", 0);
+	fnode = of_parse_phandle(np, "xlnx,dp-retimer", 0);
 	if (!fnode) {
 		dev_err(&pdev->dev, "xilinx-vfmc not found in DT\n");
 		of_node_put(fnode);
