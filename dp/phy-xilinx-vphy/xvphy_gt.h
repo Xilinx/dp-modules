@@ -108,5 +108,14 @@ extern const XVphy_GtConfig Gthe4Config;
 extern const XVphy_GtConfig Gtye4Config;
 #endif
 
+/*
+ * Runtime GT selection (dp-modules): both GTHE4 and GTYE4 adaptors are compiled
+ * in and chosen at runtime from the DT xlnx,transceiver-type. Declare both
+ * unconditionally so XVphy_CfgInitialize can reference either one regardless of
+ * the compile-time XPAR_VPHY_0_TRANSCEIVER default.
+ */
+extern const XVphy_GtConfig Gthe4Config;
+extern const XVphy_GtConfig Gtye4Config;
+
 #endif /* XVPHY_GT_H_ */
 /** @} */

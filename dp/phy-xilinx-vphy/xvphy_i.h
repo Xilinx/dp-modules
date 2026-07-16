@@ -96,6 +96,8 @@ u32 XVphy_GtUserRdyEnable(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_DirectionType Dir, u8 Hold);
 u32 XVphy_CfgCpllCalPeriodandTol(XVphy *InstancePtr, u8 QuadId,
 		XVphy_ChannelId ChId, XVphy_DirectionType Dir, u32 FreeRunClkFreq);
+u8 XVphy_GetRefClkSourcesCount(XVphy *InstancePtr);
+u8 XVphy_IsHDMI(XVphy *InstancePtr, XVphy_DirectionType Dir);
 
 
 /* xvphy.c: GT/MMCM DRP access. */

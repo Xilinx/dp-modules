@@ -109,19 +109,24 @@ void XVphy_CfgInitialize(XVphy *InstancePtr, XVphy_Config *ConfigPtr,
 	InstancePtr->Config = *ConfigPtr;
 	InstancePtr->Config.BaseAddr = EffectiveAddr;
 
-#if (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTXE2)
-	InstancePtr->GtAdaptor = &Gtxe2Config;
-#elif (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTHE2)
-	InstancePtr->GtAdaptor = &Gthe2Config;
-#elif (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTPE2)
-	InstancePtr->GtAdaptor = &Gtpe2Config;
-#elif (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTHE3)
-	InstancePtr->GtAdaptor = &Gthe3Config;
-#elif (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTHE4)
-	InstancePtr->GtAdaptor = &Gthe4Config;
-#elif (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTYE4)
-	InstancePtr->GtAdaptor = &Gtye4Config;
-#endif
+	/*
+	 * Bind the GT adaptor at runtime from the transceiver type resolved by
+	 * the device tree (Config.XcvrType, populated from "xlnx,transceiver-type"
+	 * by the phy-vphy wrapper), so that a single module binary can drive
+	 * either a GTHE4 or a GTYE4 bitstream. Only GT variants whose source is
+	 * compiled into this build may be referenced here (see the driver
+	 * Makefile); GTHE4 and GTYE4 are the supported set. Any other/unknown
+	 * value falls back to GTHE4, which is the default board configuration.
+	 */
+	switch (InstancePtr->Config.XcvrType) {
+	case XVPHY_GT_TYPE_GTYE4:
+		InstancePtr->GtAdaptor = &Gtye4Config;
+		break;
+	case XVPHY_GT_TYPE_GTHE4:
+	default:
+		InstancePtr->GtAdaptor = &Gthe4Config;
+		break;
+	}
 
 	const XVphy_SysClkDataSelType SysClkCfg[7][2] = {
 		{(XVphy_SysClkDataSelType)0, XVPHY_SYSCLKSELDATA_TYPE_CPLL_OUTCLK},

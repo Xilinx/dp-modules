@@ -664,6 +664,15 @@ typedef struct {
 	u32 AxiLiteClkFreq;	    /**< AXI Lite Clock Frequency in Hz */
 	u32 DrpClkFreq;	        /**< DRP Clock Frequency in Hz */
 	u8  UseGtAsTxTmdsClk;	/**< Use 4th GT channel as TX TMDS clock */
+	u32 xfmc_present;	/* Enable/Disable xfmc programming */
+	/*
+	 * The following DP2.1 fields are appended after the members that are
+	 * positionally initialised from the generated XVphy_ConfigTable. They
+	 * default to 0 (legacy 8b/10b) and are populated at runtime from the
+	 * device tree by the phy-vphy wrapper.
+	 */
+	u8  DpTxProtocol;	/**< DP TX protocol: 1 = DP2.1 (128b/132b). */
+	u8  DpRxProtocol;	/**< DP RX protocol: 1 = DP2.1 (128b/132b). */
 } XVphy_Config;
 
 /* Forward declaration. */

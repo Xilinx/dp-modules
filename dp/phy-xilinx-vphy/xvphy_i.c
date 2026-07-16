@@ -1508,6 +1508,95 @@ void XVphy_ErrorHandler(XVphy *InstancePtr)
 	}
 }
 
+/*****************************************************************************/
+/**
+* This function obtains the number of active REFCLK sources based on the
+* protocol and DRU usage.
+*
+* @param	InstancePtr is a pointer to the XVphy core instance.
+*
+* @return	No of active REFCLK sources
+*
+* @note		None.
+*
+******************************************************************************/
+u8 XVphy_GetRefClkSourcesCount(XVphy *InstancePtr)
+{
+	u8 RefClkNum = 0;
+	u8 RefClkNumMax = 3;
+	XVphy_PllRefClkSelType RefClkSel[RefClkNumMax];
+	XVphy_PllRefClkSelType RefClkSelTemp[RefClkNumMax];
+	u8 i, j, Match;
+
+	/* TxRefClkSel */
+	RefClkSel[0] = (InstancePtr->Config.TxProtocol != XVPHY_PROTOCOL_NONE) ?
+						InstancePtr->Config.TxRefClkSel : 99;
+	/* RxRefClkSel */
+	RefClkSel[1] = (InstancePtr->Config.RxProtocol != XVPHY_PROTOCOL_NONE) ?
+						InstancePtr->Config.RxRefClkSel : 99;
+	/* DruRefClkSel */
+	RefClkSel[2] = (InstancePtr->Config.DruIsPresent) ?
+						InstancePtr->Config.DruRefClkSel : 99;
+
+	/* Initialize Unique RefClk holder */
+	for (i=0; i<RefClkNumMax; i++) {
+		RefClkSelTemp[i] = 99;
+	}
+
+	i = 0;
+	do {
+		if (RefClkSel[i] != 99) {
+			Match = 0;
+			j = 0;
+			/* Check if RefClkSel is already in Unique Holder array */
+			do {
+				if (RefClkSelTemp[j] == RefClkSel[i]) {
+					Match |= 1;
+				}
+				j++;
+			} while (j<RefClkNum);
+
+			/* Register in Unique Holder if new RefClk is detected */
+			if (Match == 0) {
+				RefClkSelTemp[RefClkNum] = RefClkSel[i];
+				/* Increment RefClk counter */
+				RefClkNum++;
+			}
+		}
+		i++;
+	} while (i<RefClkNumMax);
+
+	return RefClkNum;
+}
+
+/*****************************************************************************/
+/**
+* This function determines whether the given direction is configured for the
+* HDMI protocol.
+*
+* @param	InstancePtr is a pointer to the XVphy core instance.
+* @param	Dir is an indicator for RX or TX.
+*
+* @return	TRUE if the direction is HDMI, FALSE otherwise.
+*
+* @note		None.
+*
+******************************************************************************/
+u8 XVphy_IsHDMI(XVphy *InstancePtr, XVphy_DirectionType Dir)
+{
+	if (Dir == XVPHY_DIR_TX) {
+		if (InstancePtr->Config.TxProtocol == XVPHY_PROTOCOL_HDMI) {
+			return TRUE;
+		}
+	} else { /* Dir == XVPHY_DIR_RX */
+		if (InstancePtr->Config.RxProtocol == XVPHY_PROTOCOL_HDMI) {
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
 #if (XPAR_VPHY_0_TRANSCEIVER == XVPHY_GTXE2)
 /*****************************************************************************/
 /**

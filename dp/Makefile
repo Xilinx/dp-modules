@@ -52,6 +52,7 @@ phy-xilinx-vphy-objs += phy-xilinx-vphy/xdebug.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_i.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_gthe4.o
+phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_gtye4.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_dp.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_intr.o
 phy-xilinx-vphy-objs += phy-xilinx-vphy/xvphy_log.o
