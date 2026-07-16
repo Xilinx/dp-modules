@@ -39,12 +39,14 @@
  */
 struct x_vfmc_dev {
 	struct device      *dev;
+	bool               is_parretto;
 	struct i2c_client  *fmc64_client;
 	struct i2c_client  *fmc65_client;
 	struct i2c_client  *idt_client;
 	struct i2c_client  *tipower_client;
 	struct i2c_client  *mcdp6000_client;
 	struct i2c_client  *dp141_client;
+	struct i2c_client  *tdp2004_client;
 };
 
 /*
@@ -89,9 +91,12 @@ int dp141_entry(void);
 void dp141_exit(void);
 int mcdp6000_entry(void);
 void mcdp6000_exit(void);
+int tdp2004_entry(void);
+void tdp2004_exit(void);
 
 int IDT_8T49N24x_SetClock(struct i2c_client *client);
 int xfmc_init(struct x_vfmc_dev *xfmcdev);
+int tdp2004_init(struct i2c_client *client);
 
 /* MCDP6000 runtime callbacks - take explicit client for instance safety */
 int XDpRxSs_MCDP6000_EnableDisablePrbs7_Rx(struct i2c_client *client,

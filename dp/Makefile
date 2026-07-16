@@ -42,6 +42,7 @@ xilinx-vfmc-objs += xfmc/idt.o
 xilinx-vfmc-objs += xfmc/tipower.o
 xilinx-vfmc-objs += xfmc/mcdp6000.o
 xilinx-vfmc-objs += xfmc/dp141.o
+xilinx-vfmc-objs += xfmc/tdp2004.o
 
 # the C API around the IP registers
 CFLAGS_phy-vphy.o += -I$(src)/phy-xilinx-vphy/

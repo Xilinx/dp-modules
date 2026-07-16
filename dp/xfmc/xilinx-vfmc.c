@@ -106,6 +106,46 @@ static int xvfmc_probe(struct platform_device *pdev)
 
 	xfmcdev->dev = &pdev->dev;
 
+	/* Check whether a Parretto FMC is fitted instead of the standard FMC */
+	xfmcdev->is_parretto = of_property_read_bool(np, "xlnx,parretto-fmc");
+
+	if (xfmcdev->is_parretto) {
+		/* Parretto FMC: only TDP2004 needs to be initialised for TXSS.
+		 * No retimer callbacks are required for RXSS.
+		 */
+		xfmcdev->tdp2004_client = resolve_phandle_to_client(np,
+							"xlnx,tdp2004");
+		if (!xfmcdev->tdp2004_client) {
+			dev_info(&pdev->dev,
+				 "TDP2004 not yet probed - deferring\n");
+			return -EPROBE_DEFER;
+		}
+
+		status = tdp2004_init(xfmcdev->tdp2004_client);
+		if (status) {
+			dev_err(&pdev->dev,
+				"TDP2004 init failed: %d\n", status);
+			return status;
+		}
+
+		/*
+		 * Store the zero-initialized cfg struct (mcdp6000_client=NULL,
+		 * all callbacks=NULL) as drvdata.  xlnx_find_device() in the
+		 * DP RX/TX subsystem drivers retrieves this pointer and casts it
+		 * to struct x_vfmc_cfg *.  Because client (offset 0) is NULL,
+		 * every retimer-callback guard in dprxss/dptxss will skip the
+		 * call safely.  Storing xfmcdev instead caused a crash: the
+		 * bool is_parretto=1 at struct offset 8 was misread as the
+		 * retimer_access_laneset function pointer (value 0x1), the
+		 * null-check guard passed, and blr x1 faulted with pc=0x1.
+		 */
+		platform_set_drvdata(pdev, cfg);
+		dev_info(&pdev->dev,
+			 "xilinx-vfmc (Parretto) probed successfully\n");
+		return 0;
+	}
+
+	/* Standard FMC flow */
 	xfmcdev->fmc64_client    = resolve_phandle_to_client(np, "xlnx,fmc64");
 	xfmcdev->fmc65_client    = resolve_phandle_to_client(np, "xlnx,fmc65");
 	xfmcdev->idt_client      = resolve_phandle_to_client(np, "xlnx,idt");
@@ -184,6 +224,10 @@ static int __init xvfmc_module_init(void)
 	if (ret)
 		goto err_mcdp6000;
 
+	ret = tdp2004_entry();
+	if (ret)
+		goto err_tdp2004;
+
 	ret = idt_entry();
 	if (ret)
 		goto err_idt;
@@ -197,6 +241,8 @@ static int __init xvfmc_module_init(void)
 err_platform:
 	idt_exit();
 err_idt:
+	tdp2004_exit();
+err_tdp2004:
 	mcdp6000_exit();
 err_mcdp6000:
 	dp141_exit();
@@ -214,6 +260,7 @@ static void __exit xvfmc_module_exit(void)
 {
 	platform_driver_unregister(&xvfmc_driver);
 	idt_exit();
+	tdp2004_exit();
 	mcdp6000_exit();
 	dp141_exit();
 	tipower_exit();
