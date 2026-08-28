@@ -98,6 +98,9 @@
 #define XVPHY_GTHE4_PREEMP_DP_L2    0x16
 #define XVPHY_GTHE4_PREEMP_DP_L3    0x1D
 
+/* DP2.1 128b/132b (UHBR): fixed GT differential swing for every TX FFE preset; only post-cursor varies. */
+#define XVPHY_GTHE4_DIFF_SWING_DP_DP20 0xF
+
 #define XPAR_XDP_0_GT_DATAWIDTH 2
 #define XVPHY_DRP_REF_CLK_HZ	40000000
 #define SET_RX_TO_2BYTE		\
@@ -588,6 +591,27 @@ void xvphy_SetTxVoltageSwing (XVphy *InstancePtr, u32 chid, u8 vs)
 	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
 }
 
+/*
+ * DP pre-emphasis is implemented in the GT FFE as post-cursor de-emphasis.
+ */
+void xvphy_SetTxPostCursor(XVphy *InstancePtr, u32 chid, u8 pc)
+{
+	u32 regval;
+	u32 maskval;
+	u32 regoffset;
+
+	if (chid == XVPHY_CHANNEL_ID_CH1 || chid == XVPHY_CHANNEL_ID_CH2)
+		regoffset = XVPHY_TX_DRIVER_CH12_REG;
+	else
+		regoffset = XVPHY_TX_DRIVER_CH34_REG;
+
+	regval = XVphy_ReadReg(InstancePtr->Config.BaseAddr, regoffset);
+	maskval = XVPHY_TX_DRIVER_TXPOSTCURSOR_MASK(chid);
+	regval &= ~maskval;
+	regval |= (pc << XVPHY_TX_DRIVER_TXPOSTCURSOR_SHIFT(chid));
+	XVphy_WriteReg(InstancePtr->Config.BaseAddr, regoffset, regval);
+}
+
 void xvphy_prbs_mode(void *vphy,u8 enable)
 {
 	struct xvphy_dev *vphydev = (struct xvphy_dev *)vphy;
@@ -635,73 +659,164 @@ void xvphy_pe_vs_adjust_handler(struct xvphy_dev *vphydev,
 {
 	unsigned char preemp = 0, diff_swing = 0;
 
-	switch (dp->pre[0]) {
-	case 0:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L0; break;
-	case 1:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L1; break;
-	case 2:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L2; break;
-	case 3:
-		preemp = XVPHY_GTHE3_PREEMP_DP_L3; break;
+	/*
+	 * DP2.1 datapath: dp->pre[0] carries a 4-bit TX FFE preset. UHBR rates
+	 * (>= 10000 Mb/s) use a fixed differential swing, varying only the
+	 * post-cursor; sub-UHBR DP2.1 rates keep a vs/pe pair like DP1.4.
+	 */
+	if (vphydev->xvphy.Config.DpTxProtocol == 1) {
+		if (dp->link_rate >= 10000) {
+			switch (dp->pre[0]) {
+			case 0:
+				preemp = 0x5; break;
+			case 1:
+				preemp = XVPHY_GTHE4_PREEMP_DP_L1; break;
+			case 2:
+				preemp = XVPHY_GTHE4_PREEMP_DP_L2; break;
+			case 3:
+			default:
+				preemp = XVPHY_GTHE4_PREEMP_DP_L3; break;
+			}
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_DP20;
+
+			xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, diff_swing);
+			xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, diff_swing);
+			xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, diff_swing);
+			xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, diff_swing);
+
+			xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, preemp);
+			xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, preemp);
+			xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, preemp);
+			xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, preemp);
+			dev_info(vphydev->dev,
+				 "%s: DP2.1 128b/132b FFE preset L0=%u -> swing=0x%02x pc(CH1-4)=0x%02x\n",
+				 __func__, dp->pre[0], diff_swing, preemp);
+			return;
+		}
+
+		switch (dp->pre[0]) {
+		case 0:
+			preemp = XVPHY_GTHE4_PREEMP_DP_L0; break;
+		case 1:
+			preemp = XVPHY_GTHE4_PREEMP_DP_L1; break;
+		case 2:
+			preemp = XVPHY_GTHE4_PREEMP_DP_L2; break;
+		case 3:
+			preemp = XVPHY_GTHE4_PREEMP_DP_L3; break;
+		}
+
+		switch (dp->voltage[0]) {
+		case 0:
+			switch (dp->pre[0]) {
+			case 0:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P0; break;
+			case 1:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P1; break;
+			case 2:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P2; break;
+			case 3:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P3; break;
+			}
+			break;
+		case 1:
+			switch (dp->pre[0]) {
+			case 0:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P0; break;
+			case 1:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P1; break;
+			case 2:
+			case 3:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P2; break;
+			}
+			break;
+		case 2:
+			switch (dp->pre[0]) {
+			case 0:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V2P0; break;
+			case 1:
+			case 2:
+			case 3:
+				diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V2P1; break;
+			}
+			break;
+		case 3:
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V3P0; break;
+		}
+
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, diff_swing);
+		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, diff_swing);
+
+		xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, preemp);
+		xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, preemp);
+		xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, preemp);
+		xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, preemp);
+
+		dev_info(vphydev->dev,
+			 "%s: DP2.1 vs/pe adjust vs=%u pe=%u -> swing=0x%02x postcursor=0x%02x\n",
+			 __func__, dp->voltage[0], dp->pre[0], diff_swing, preemp);
+		return;
 	}
 
-		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH1, preemp);
-		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH2, preemp);
-		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH3, preemp);
-		xvphy_SetTxPreEmphasis(&vphydev->xvphy,XVPHY_CHANNEL_ID_CH4, preemp);
+	switch (dp->pre[0]) {
+	case 0:
+		preemp = XVPHY_GTHE4_PREEMP_DP_L0; break;
+	case 1:
+		preemp = XVPHY_GTHE4_PREEMP_DP_L1; break;
+	case 2:
+		preemp = XVPHY_GTHE4_PREEMP_DP_L2; break;
+	case 3:
+		preemp = XVPHY_GTHE4_PREEMP_DP_L3; break;
+	}
 
 	switch (dp->voltage[0]) {
 	case 0:
 		switch (dp->pre[0]) {
 		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L0;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P0; break;
 		case 1:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P1; break;
 		case 2:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P2; break;
 		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V0P3; break;
 		}
 		break;
 	case 1:
 		switch (dp->pre[0]) {
 		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L1;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P0; break;
 		case 1:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P1; break;
 		case 2:
 		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V1P2; break;
 		}
 		break;
 	case 2:
 		switch (dp->pre[0]) {
 		case 0:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L2;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V2P0; break;
 		case 1:
 		case 2:
 		case 3:
-			diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-			break;
+			diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V2P1; break;
 		}
 		break;
 	case 3:
-		diff_swing = XVPHY_GTHE3_DIFF_SWING_DP_L3;
-		break;
+		diff_swing = XVPHY_GTHE4_DIFF_SWING_DP_V3P0; break;
 	}
-		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, diff_swing);
-		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, diff_swing);
-		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, diff_swing);
-		xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, diff_swing);
+
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, diff_swing);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, diff_swing);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, diff_swing);
+	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, diff_swing);
+
+	xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH1, preemp);
+	xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH2, preemp);
+	xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH3, preemp);
+	xvphy_SetTxPostCursor(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4, preemp);
 }
 
 void xvphy_mutex_unlock(struct phy *phy)
