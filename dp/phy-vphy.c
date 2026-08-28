@@ -508,6 +508,86 @@ u32 set_vphy(struct xvphy_dev *vphydev, int LineRate_init_tx){
 
         u32 Status=0;
 
+	/* DP2.1 (UHBR-capable) : dedicated rate table, refclk pair and SetupDP21Phy/DP21PhyReset sequence. */
+	if (vphydev->xvphy.Config.DpTxProtocol == 1) {
+		XVphy *InstancePtr = &vphydev->xvphy;
+		XVphy_PllRefClkSelType Refclk;
+		XVphy_PllType TxPll = vphydev->tx_pll;
+		XVphy_ChannelId TxChId = vphydev->tx_chid;
+		u64 LineRateHz;
+		u8 RateCode;
+
+		switch (LineRate_init_tx) {
+		case 1620:
+			RateCode = 0x06;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_162GBPS;
+			break;
+		case 2700:
+			RateCode = 0x0A;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_270GBPS;
+			break;
+		case 5400:
+			RateCode = 0x14;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_540GBPS;
+			break;
+		case 8100:
+			RateCode = 0x1E;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_810GBPS;
+			break;
+		case 10000:
+			RateCode = 0x01;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_10GBPS;
+			break;
+		case 13500:
+			/* DPCD/BM code for UHBR13.5 is 0x04 (MMCM dp20rate case). */
+			RateCode = 0x04;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_135GBPS;
+			break;
+		case 20000:
+			/* DPCD/BM code for UHBR20 is 0x02 (MMCM dp20rate case). */
+			RateCode = 0x02;
+			LineRateHz = XVPHY_DP_LINK_RATE_HZ_20GBPS;
+			break;
+		default:
+			printk("%s: unsupported DP2.1 link rate %d Mbps\n",
+			       __func__, LineRate_init_tx);
+			return XST_FAILURE;
+		}
+
+		/* 8b/10b rates use the 270 MHz GTREFCLK0; UHBR rates use the 400 MHz GTSOUTHREFCLK0. */
+		Refclk = (LineRate_init_tx <= 8100) ?
+				XVPHY_REF_CLK_SEL_XPLL_GTREFCLK0 :
+				XVPHY_REF_CLK_SEL_XPLL_GTSOUTHREFCLK0;
+
+		printk("DP2.1 set_vphy: ENTER rate=%dMbps code=0x%02x refclk=%s pll=%s chid=%s\n",
+		       LineRate_init_tx, RateCode,
+		       (Refclk == XVPHY_REF_CLK_SEL_XPLL_GTREFCLK0) ?
+				"GTREFCLK0(270M)" : "GTSOUTHREFCLK0(400M)",
+		       (TxPll == XVPHY_PLL_TYPE_CPLL)  ? "CPLL"  :
+		       (TxPll == XVPHY_PLL_TYPE_QPLL0) ? "QPLL0" : "QPLL1",
+		       (TxChId == XVPHY_CHANNEL_ID_CHA)  ? "CHA"  :
+		       (TxChId == XVPHY_CHANNEL_ID_CMN0) ? "CMN0" : "CMN1");
+
+		XVphy_CfgQuadRefClkFreq(InstancePtr, 0,
+				XVPHY_REF_CLK_SEL_XPLL_GTREFCLK0, 270000000);
+		XVphy_CfgQuadRefClkFreq(InstancePtr, 0,
+				XVPHY_REF_CLK_SEL_XPLL_GTSOUTHREFCLK0, 400000000);
+
+		XVphy_CfgLineRate(InstancePtr, 0,
+				XVPHY_CHANNEL_ID_CHA, LineRateHz);
+		XVphy_CfgLineRate(InstancePtr, 0, TxChId, LineRateHz);
+
+		XVphy_SetupDP21Phy(InstancePtr, 0, TxChId, XVPHY_DIR_TX,
+				RateCode, Refclk, TxPll);
+
+		Status = XVphy_DP21PhyReset(InstancePtr, 0, TxChId,
+				XVPHY_DIR_TX);
+		printk("DP2.1 set_vphy: DP21PhyReset rate=%dMbps Status=%d (%s)\n",
+		       LineRate_init_tx, Status, Status ? "FAIL" : "OK");
+
+		return Status;
+	}
+
 //	dev_dbg(vphydev->dev,"  set_vphy \n");
         switch(LineRate_init_tx){
                 case 1620:
@@ -529,6 +609,12 @@ u32 set_vphy(struct xvphy_dev *vphydev, int LineRate_init_tx){
                         Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
                                                 PHY_User_Config_Table[(is_TX_CPLL)?9:10]);
                         break;
+
+                default:
+                        /* Unsupported rate: report failure instead of training against an unconfigured PHY. */
+                        printk("%s: unsupported link rate %d Mbps\n",
+                               __func__, LineRate_init_tx);
+                        return XST_FAILURE;
         }
 
         if (Status != XST_SUCCESS) {
@@ -927,9 +1013,13 @@ static int xvphy_phy_configure(struct phy *phy, union phy_configure_opts *opts)
 		opts->dp.set_rate = 0;
 	}
 	if(opts->dp.set_rate && vphy_lane->direction) {
+		u32 status;
+
 		dev_dbg(vphydev->dev,"%s:set_rate\n",__func__);
-		set_vphy(vphydev,opts->dp.link_rate);
+		status = set_vphy(vphydev,opts->dp.link_rate);
 		opts->dp.set_rate = 0;
+		if (status != XST_SUCCESS)
+			return -EINVAL;
 	}
 	if(opts->dp.set_voltages && vphy_lane->direction){
 		xvphy_pe_vs_adjust_handler(vphydev, &opts->dp);
