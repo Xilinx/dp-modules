@@ -564,6 +564,7 @@ typedef struct {
 	u16 ClkOut0Frac;
 	u16 ClkOut1Div;
 	u16 ClkOut2Div;
+	u8 dp20rate;		/**< DP2.1 line rate code; 0 = legacy 8b/10b. */
 } XVphy_Mmcm;
 
 /**
@@ -648,6 +649,14 @@ typedef struct {
 	u32 DrpClkFreq;	        /**< DRP Clock Frequency in Hz */
 	u8  UseGtAsTxTmdsClk;	/**< Use 4th GT channel as TX TMDS clock */
 	u32 xfmc_present;	/* Enable/Disable xfmc programming */
+	/*
+	 * The following DP2.1 fields are appended after the members that are
+	 * positionally initialised from the generated XVphy_ConfigTable. They
+	 * default to 0 (legacy 8b/10b) and are populated at runtime from the
+	 * device tree by the phy-vphy wrapper.
+	 */
+	u8  DpTxProtocol;	/**< DP TX protocol: 1 = DP2.1 (128b/132b). */
+	u8  DpRxProtocol;	/**< DP RX protocol: 1 = DP2.1 (128b/132b). */
 } XVphy_Config;
 
 /* Forward declaration. */
@@ -794,6 +803,11 @@ u32 XVphy_PllInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_PllType TxPllSelect, XVphy_PllType RxPllSelect);
 #if defined (XPAR_XDP_0_DEVICE_ID)
 u32 XVphy_ClkInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
+		XVphy_DirectionType Dir);
+void XVphy_SetupDP21Phy(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
+		XVphy_DirectionType Dir, u8 Rate, XVphy_PllRefClkSelType RefClkSel,
+		XVphy_PllType PllSelect);
+u16 XVphy_DP21PhyReset(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_DirectionType Dir);
 #endif
 u32 XVphy_GetVersion(XVphy *InstancePtr);

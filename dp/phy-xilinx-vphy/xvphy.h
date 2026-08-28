@@ -581,6 +581,7 @@ typedef struct {
 	u16 ClkOut0Frac;
 	u16 ClkOut1Div;
 	u16 ClkOut2Div;
+	u8 dp20rate;		/**< DP2.1 line rate code; 0 = legacy 8b/10b. */
 } XVphy_Mmcm;
 
 /**
@@ -819,6 +820,11 @@ u32 XVphy_PllInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_PllType TxPllSelect, XVphy_PllType RxPllSelect);
 #if defined (XPAR_XDP_0_DEVICE_ID)
 u32 XVphy_ClkInitialize(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
+		XVphy_DirectionType Dir);
+void XVphy_SetupDP21Phy(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
+		XVphy_DirectionType Dir, u8 Rate, XVphy_PllRefClkSelType RefClkSel,
+		XVphy_PllType PllSelect);
+u16 XVphy_DP21PhyReset(XVphy *InstancePtr, u8 QuadId, XVphy_ChannelId ChId,
 		XVphy_DirectionType Dir);
 #endif
 u32 XVphy_GetVersion(XVphy *InstancePtr);
