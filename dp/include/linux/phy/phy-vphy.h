@@ -49,6 +49,9 @@ struct xvphy_dev {
         struct regmap *regmap;
         int inst_id;
 	struct xvphy_cfg *xvphy_prvdata;
+	/* TX PLL/channel resolved from xlnx,tx-pll-selection; defaults to QPLL1/CMN1. */
+	XVphy_PllType tx_pll;
+	XVphy_ChannelId tx_chid;
 };
 
 

@@ -319,6 +319,41 @@ void PLLRefClkSel (XVphy *InstancePtr, u32 link_rate) {
 		break;
 	}
 }
+
+/*
+ * Resolve xlnx,tx-pll-selection (parsed into Config.TxSysPllClkSel) into an
+ * XVphy_PllType/channel pair and cache it on the vphy device, so every TX
+ * bring-up path (probe, per-rate set_vphy/SetupDP21Phy) uses the same PLL.
+ * DT encoding: 0x00 CPLL/CHA, 0x01 or 0x03 QPLL0/CMN0, 0x02 (or unset) QPLL1/CMN1.
+ */
+static void xvphy_resolve_tx_pll(struct xvphy_dev *vphydev)
+{
+	switch (vphydev->cfg->TxSysPllClkSel) {
+	case XVPHY_SYSCLKSELDATA_TYPE_CPLL_OUTCLK:
+		vphydev->tx_pll  = XVPHY_PLL_TYPE_CPLL;
+		vphydev->tx_chid = XVPHY_CHANNEL_ID_CHA;
+		break;
+	case XVPHY_SYSCLKSELDATA_TYPE_QPLL_OUTCLK:
+	case XVPHY_SYSCLKSELDATA_TYPE_QPLL0_OUTCLK:
+		vphydev->tx_pll  = XVPHY_PLL_TYPE_QPLL0;
+		vphydev->tx_chid = XVPHY_CHANNEL_ID_CMN0;
+		break;
+	case XVPHY_SYSCLKSELDATA_TYPE_QPLL1_OUTCLK:
+	default:
+		vphydev->tx_pll  = XVPHY_PLL_TYPE_QPLL1;
+		vphydev->tx_chid = XVPHY_CHANNEL_ID_CMN1;
+		break;
+	}
+
+	dev_info(vphydev->dev,
+		 "TX PLL from DT (TxSysPllClkSel=%d): pll=%s chid=%s\n",
+		 vphydev->cfg->TxSysPllClkSel,
+		 (vphydev->tx_pll == XVPHY_PLL_TYPE_CPLL)  ? "CPLL"  :
+		 (vphydev->tx_pll == XVPHY_PLL_TYPE_QPLL0) ? "QPLL0" : "QPLL1",
+		 (vphydev->tx_chid == XVPHY_CHANNEL_ID_CHA)  ? "CHA"  :
+		 (vphydev->tx_chid == XVPHY_CHANNEL_ID_CMN0) ? "CMN0" : "CMN1");
+}
+
 /*****************************************************************************/
 /**
 *
@@ -339,9 +374,11 @@ void DpRxSs_LinkBandwidthHandler(struct xvphy_dev *vphydev, u32 linkrate)
 	PLLRefClkSel (&vphydev->xvphy,linkrate);
 	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			 XVPHY_DIR_RX,(TRUE));
+	/* XVphy_PllInitialize sets TX and RX SysClkDataSel together, so TxPllSelect
+	 * must stay the DT-resolved TX PLL and not a hardcoded QPLL. */
 	XVphy_PllInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			    ONBOARD_REF_CLK, ONBOARD_REF_CLK,
-			    XVPHY_PLL_TYPE_QPLL1, XVPHY_PLL_TYPE_CPLL);
+			    vphydev->tx_pll, XVPHY_PLL_TYPE_CPLL);
 	XVphy_ClkInitialize(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
 			    XVPHY_DIR_RX);
 
@@ -997,6 +1034,18 @@ static int vphy_parse_of(struct xvphy_dev *vphydev, XVphy_Config *c)
 	has_err_irq = of_property_read_bool(node, "xlnx,err-irq-en");
 	c->ErrIrq = has_err_irq;
 
+	/* Optional bitstream-specific override of the compile-time GT datapath width. */
+	if (!of_property_read_u32(node, "xlnx,transceiver-width", &val))
+		c->TransceiverWidth = val;
+
+	/* RX DP2.1 is not ported, so DpRxProtocol stays 0. */
+	c->DpTxProtocol = 0;
+	c->DpRxProtocol = 0;
+	/* auto-generated IP-parameter property; no "xlnx," prefix in the DTS. */
+	if ((!of_property_read_u32(node, "dp21-present", &val) && val) ||
+	    c->TransceiverWidth == 8)
+		c->DpTxProtocol = 1;
+
 	c->xfmc_present =
 		of_property_read_bool(node, "xlnx,xfmc-present");
 	return 0;
@@ -1206,6 +1255,9 @@ static int xvphy_probe(struct platform_device *pdev)
 	if (ret) return ret;
 	dev_dbg(vphydev->dev,"DT parse done\n");
 
+	/* Resolve the DT-selected TX PLL before any GT bring-up. */
+	xvphy_resolve_tx_pll(vphydev);
+
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	vphydev->iomem = devm_ioremap_resource(&pdev->dev, res);
@@ -1257,7 +1309,9 @@ static int xvphy_probe(struct platform_device *pdev)
 	XVphy_DpInitialize(&vphydev->xvphy, vphydev->cfg, 0,
 			   PHY_User_Config_Table[9].CPLLRefClkSrc,
 			   PHY_User_Config_Table[9].QPLLRefClkSrc,
-			   PHY_User_Config_Table[9].TxPLL,
+			   (vphydev->cfg->TransceiverWidth == 2) ?
+				PHY_User_Config_Table[9].TxPLL :
+				vphydev->tx_pll,
 			   PHY_User_Config_Table[9].RxPLL,
 			   PHY_User_Config_Table[9].LineRate);
 
