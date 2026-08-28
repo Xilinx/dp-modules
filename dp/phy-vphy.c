@@ -1438,7 +1438,6 @@ static int xvphy_probe(struct platform_device *pdev)
 	fnode = of_parse_phandle(np, "xlnx,dp-retimer", 0);
 	if (!fnode) {
 		dev_err(&pdev->dev, "xilinx-vfmc not found in DT\n");
-		of_node_put(fnode);
 	} else {
 		iface_pdev = of_find_device_by_node(fnode);
 		if (!iface_pdev) {
@@ -1529,28 +1528,46 @@ static int xvphy_probe(struct platform_device *pdev)
 				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
 	xvphy_SetTxVoltageSwing(&vphydev->xvphy, XVPHY_CHANNEL_ID_CH4,
 				XVPHY_GTHE4_DIFF_SWING_DP_V0P0);
-	PHY_Two_byte_set (&vphydev->xvphy, 1, 1);
+	/* Forcing 2-byte datapath mode on a wider GT mis-clocks the PCS. */
+	if (vphydev->cfg->TransceiverWidth == 2)
+		PHY_Two_byte_set (&vphydev->xvphy, 1, 1);
+	else
+		dev_info(&pdev->dev,
+			 "GT transceiver-width=%u: skipping 2-byte datapath force\n",
+			 vphydev->cfg->TransceiverWidth);
 
-	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(TRUE));
-	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(TRUE));
+	if (vphydev->cfg->TransceiverWidth == 2) {
+		XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA, XVPHY_DIR_TX,(TRUE));
+		XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(TRUE));
 
-	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
-			 XVPHY_DIR_TX,(FALSE));
-	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(FALSE));
+		XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+				 XVPHY_DIR_TX,(FALSE));
+		XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_TX,(FALSE));
 
-	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
-			 XVPHY_DIR_RX,(TRUE));
-	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(TRUE));
+		XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+				 XVPHY_DIR_RX,(TRUE));
+		XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(TRUE));
 
-	XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
-			 XVPHY_DIR_RX,(FALSE));
-	XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(FALSE));
+		XVphy_ResetGtPll(&vphydev->xvphy, 0, XVPHY_CHANNEL_ID_CHA,
+				 XVPHY_DIR_RX,(FALSE));
+		XVphy_BufgGtReset(&vphydev->xvphy, XVPHY_DIR_RX,(FALSE));
 
-	Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
-				PHY_User_Config_Table[(is_TX_CPLL) ? 2 : 5]);
-	if(Status) {
-		dev_err(&pdev->dev, "dp-vphy probe failed\n");
-                return Status;
+		Status = PHY_Configuration_Tx(&vphydev->xvphy,vphydev,
+					PHY_User_Config_Table[(is_TX_CPLL) ? 2 : 5]);
+		if(Status) {
+			dev_err(&pdev->dev, "dp-vphy probe failed\n");
+			return Status;
+		}
+	} else {
+		/* DP2.1 wide datapath bring-up via SetupDP21Phy/DP21PhyReset at 5.4 Gbps. */
+		dev_info(&pdev->dev,
+			 "GT transceiver-width=%u: DP2.1 probe bring-up via SetupDP21Phy @5.4G\n",
+			 vphydev->cfg->TransceiverWidth);
+		Status = set_vphy(vphydev, 5400);
+		if (Status != XST_SUCCESS) {
+			dev_err(&pdev->dev, "dp-vphy DP2.1 probe bring-up failed\n");
+			return Status;
+		}
 	}
 	for_each_child_of_node(np, child) {
 		struct xvphy_lane *vphy_lane;
